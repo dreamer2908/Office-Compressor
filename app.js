@@ -323,21 +323,35 @@
     }
   }
 
+  // Batch Directory Reader handling 100-file pagination
+  async function readAllDirectoryEntries(dirReader) {
+    const allEntries = [];
+    let readMore = true;
+    while (readMore) {
+      const batch = await new Promise((resolve) => {
+        dirReader.readEntries((entries) => resolve(entries || []), () => resolve([]));
+      });
+      if (batch && batch.length > 0) {
+        allEntries.push(...batch);
+      } else {
+        readMore = false;
+      }
+    }
+    return allEntries;
+  }
+
   // Recursive Directory / Folder Drop Traversal
-  async function traverseFileTree(item, path = '') {
+  async function traverseFileTree(item) {
+    if (!item) return [];
     if (item.isFile) {
       return new Promise((resolve) => {
-        item.file((file) => {
-          resolve([file]);
-        });
+        item.file((file) => resolve([file]), () => resolve([]));
       });
     } else if (item.isDirectory) {
       const dirReader = item.createReader();
-      const entries = await new Promise((resolve) => {
-        dirReader.readEntries((ents) => resolve(ents));
-      });
+      const entries = await readAllDirectoryEntries(dirReader);
       const nestedFiles = await Promise.all(
-        entries.map((entry) => traverseFileTree(entry, path + item.name + '/'))
+        entries.map((childEntry) => traverseFileTree(childEntry))
       );
       return nestedFiles.flat();
     }
@@ -346,21 +360,39 @@
 
   async function handleDropEvent(e) {
     e.preventDefault();
+    e.stopPropagation();
     DOM.dropzone.classList.remove('drag-over');
 
-    const items = e.dataTransfer.items;
-    const collectedFiles = [];
+    // CRITICAL: Synchronously extract all entries/files before any async/await
+    // In Chromium/WebKit, e.dataTransfer is emptied/protected across microtask yields!
+    const entries = [];
+    const directFiles = [];
 
-    if (items && items.length > 0 && items[0].webkitGetAsEntry) {
-      for (let i = 0; i < items.length; i++) {
-        const entry = items[i].webkitGetAsEntry();
-        if (entry) {
-          const files = await traverseFileTree(entry);
-          collectedFiles.push(...files);
+    if (e.dataTransfer.items && e.dataTransfer.items.length > 0) {
+      for (let i = 0; i < e.dataTransfer.items.length; i++) {
+        const item = e.dataTransfer.items[i];
+        if (item.kind === 'file') {
+          if (typeof item.webkitGetAsEntry === 'function') {
+            const entry = item.webkitGetAsEntry();
+            if (entry) {
+              entries.push(entry);
+              continue;
+            }
+          }
+          const file = item.getAsFile ? item.getAsFile() : null;
+          if (file) directFiles.push(file);
         }
       }
-    } else if (e.dataTransfer.files) {
-      collectedFiles.push(...Array.from(e.dataTransfer.files));
+    } else if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      directFiles.push(...Array.from(e.dataTransfer.files));
+    }
+
+    let collectedFiles = [];
+    if (entries.length > 0) {
+      const results = await Promise.all(entries.map((entry) => traverseFileTree(entry)));
+      collectedFiles = results.flat().filter(Boolean);
+    } else {
+      collectedFiles = directFiles;
     }
 
     if (collectedFiles.length > 0) {
@@ -542,6 +574,11 @@
     item.phase = 'Starting';
     updateRow(item);
 
+    // Ensure all compression dependencies are loaded before executing
+    if (window.DependencyLoader && window.DependencyLoader.ready) {
+      await window.DependencyLoader.ready();
+    }
+
     const options = getEffectiveOptions();
 
     try {
@@ -596,7 +633,7 @@
         if (res.convertedExtension) newExt = res.convertedExtension;
         item.finalName = item.name.replace(/\.[^.]+$/, `.${newExt}`);
         item.resultBlob = res.blob;
-        item.compressedSize = res.buffer.byteLength;
+        item.compressedSize = res.buffer ? res.buffer.byteLength : res.blob.size;
         item.resultUrl = createManagedUrl(res.blob);
       }
 
@@ -789,6 +826,10 @@
     DOM.customImgQuality.addEventListener('input', (e) => {
       DOM.customImgQualityVal.textContent = `${e.target.value}%`;
     });
+
+    // Prevent default window file dropping navigation
+    window.addEventListener('dragover', (e) => e.preventDefault());
+    window.addEventListener('drop', (e) => e.preventDefault());
 
     // Dropzone drag-and-drop
     DOM.dropzone.addEventListener('dragover', (e) => {
