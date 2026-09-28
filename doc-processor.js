@@ -146,11 +146,12 @@
    * Process Legacy Excel (.xls): converts BIFF8 directly to modern .xlsx
    */
   async function processLegacyExcel(arrayBuffer, options = {}, onProgress = null) {
-    const XLSX = globalScope.XLSX || window.XLSX;
+    const XLSX = globalScope.XLSX || (typeof window !== 'undefined' ? window.XLSX : null);
     if (!XLSX) throw new Error('SheetJS (XLSX) library is not available');
 
     if (onProgress) onProgress({ phase: 'parsing_xls', progress: 30 });
-    const wb = XLSX.read(arrayBuffer, { type: 'array' });
+    const inputU8 = arrayBuffer instanceof Uint8Array ? arrayBuffer : new Uint8Array(arrayBuffer);
+    const wb = XLSX.read(inputU8, { type: 'array' });
 
     if (onProgress) onProgress({ phase: 'exporting_xlsx', progress: 70 });
     const xlsxArray = XLSX.write(wb, { bookType: 'xlsx', type: 'array', compression: true });
@@ -172,93 +173,223 @@
    * Process Legacy Word / PowerPoint (.doc, .ppt) via CFB
    */
   async function processLegacyCompound(arrayBuffer, options = {}, onProgress = null) {
-    const CFB = globalScope.CFB || window.CFB;
+    const CFB = globalScope.CFB || (typeof window !== 'undefined' ? (window.CFB || (window.XLSX && window.XLSX.CFB)) : null);
     if (!CFB) throw new Error('CFB library is not available');
 
-    if (onProgress) onProgress({ phase: 'parsing_cfb', progress: 20 });
-    const cfb = CFB.read(arrayBuffer, { type: 'array' });
+    if (onProgress) onProgress({ phase: 'parsing_cfb', progress: 15 });
+    const inputU8 = arrayBuffer instanceof Uint8Array ? arrayBuffer : new Uint8Array(arrayBuffer);
+    const cfb = CFB.read(inputU8, { type: 'array' });
 
-    // Look for Pictures or Data streams
+    // Locate Pictures and PowerPoint Document streams
     let picturesEntry = null;
-    for (const name of cfb.FileIndex) {
-      if (name.name === 'Pictures' || name.name === 'Data') {
-        picturesEntry = name;
-        break;
-      }
+    let pptDocEntry = null;
+    for (const entry of cfb.FileIndex) {
+      if (entry.name === 'Pictures') picturesEntry = entry;
+      else if (entry.name === 'PowerPoint Document') pptDocEntry = entry;
+      else if (entry.name === 'Data' && !picturesEntry) picturesEntry = entry;
     }
 
     if (picturesEntry && picturesEntry.content && picturesEntry.content.length > 512) {
-      if (onProgress) onProgress({ phase: 'optimizing_pictures', progress: 50 });
-      const streamContent = new Uint8Array(picturesEntry.content);
-      // Scan for JPEG headers (FF D8 FF) and PNG headers (89 50 4E 47)
-      let offset = 0;
-      let replaced = 0;
+      if (onProgress) onProgress({ phase: 'optimizing_pictures', progress: 30 });
+      try {
+        const ImageProcessor = globalScope.ImageProcessor || (typeof window !== 'undefined' ? window.ImageProcessor : null);
+        const sc = new Uint8Array(picturesEntry.content);
+        const pd = pptDocEntry && pptDocEntry.content ? new Uint8Array(pptDocEntry.content) : null;
 
-      while (offset < streamContent.length - 8) {
-        // Detect JPEG
-        if (streamContent[offset] === 0xFF && streamContent[offset+1] === 0xD8 && streamContent[offset+2] === 0xFF) {
-          // Find end of JPEG (FF D9)
-          let end = offset + 3;
-          while (end < streamContent.length - 1) {
-            if (streamContent[end] === 0xFF && streamContent[end+1] === 0xD9) {
-              end += 2;
+        // Find BStoreEntry records (0xF007, payload length 36) in PowerPoint Document
+        const bstoreEntries = [];
+        if (pd) {
+          let pDoc = 0;
+          while (pDoc < pd.length - 8) {
+            const type = pd[pDoc + 2] | (pd[pDoc + 3] << 8);
+            const len = (pd[pDoc + 4] | (pd[pDoc + 5] << 8) | (pd[pDoc + 6] << 16) | (pd[pDoc + 7] << 24)) >>> 0;
+            if (type === 0xF007 && len === 36) {
+              const size = (pd[pDoc + 8 + 20] | (pd[pDoc + 8 + 21] << 8) | (pd[pDoc + 8 + 22] << 16) | (pd[pDoc + 8 + 23] << 24)) >>> 0;
+              const delay = (pd[pDoc + 8 + 28] | (pd[pDoc + 8 + 29] << 8) | (pd[pDoc + 8 + 30] << 16) | (pd[pDoc + 8 + 31] << 24)) >>> 0;
+              bstoreEntries.push({
+                sizeOffset: pDoc + 8 + 20,
+                delayOffset: pDoc + 8 + 28,
+                size,
+                delay
+              });
+              pDoc += 44;
+            } else {
+              pDoc++;
+            }
+          }
+        }
+
+        // Determine list of BLIPs to process
+        let blipList = [];
+        if (bstoreEntries.length > 0) {
+          // Exactly matching PowerPoint's Drawing Group table
+          blipList = bstoreEntries.map((b) => ({
+            offset: b.delay,
+            size: b.size,
+            bstore: b
+          }));
+        } else {
+          // Fallback: parse raw record headers directly from Pictures stream
+          let p = 0;
+          while (p < sc.length - 8) {
+            const type = sc[p + 2] | (sc[p + 3] << 8);
+            const len = (sc[p + 4] | (sc[p + 5] << 8) | (sc[p + 6] << 16) | (sc[p + 7] << 24)) >>> 0;
+            if (type >= 0xF018 && type <= 0xF02A && len > 0 && p + 8 + len <= sc.length) {
+              blipList.push({ offset: p, size: len + 8, bstore: null });
+              p += 8 + len;
+            } else {
+              p++;
+            }
+          }
+        }
+
+        if (ImageProcessor && blipList.length > 0) {
+          const newChunks = [];
+          let currentNewOffset = 0;
+          let anyCompressed = false;
+          const totalBlips = blipList.length;
+
+          for (let i = 0; i < totalBlips; i++) {
+            const blip = blipList[i];
+            const oldOffset = blip.offset;
+            const oldSize = blip.size;
+
+            if (oldOffset + oldSize > sc.length) {
+              const rem = sc.slice(oldOffset);
+              newChunks.push(rem);
+              currentNewOffset += rem.length;
               break;
             }
-            end++;
-          }
-          const jpegLen = end - offset;
-          if (jpegLen > 1024 && jpegLen < streamContent.length - offset) {
-            try {
-              const jpegSlice = streamContent.slice(offset, end);
-              const compressed = await globalScope.ImageProcessor.compressImage(jpegSlice, {
-                sourceMime: 'image/jpeg',
-                isEmbeddedDoc: true,
-                maxBoundingBox: options.imageOptions?.maxBoundingBox || { width: 1280, height: 720 },
-                quality: options.imageOptions?.quality || 75
-              });
-              if (compressed.buffer && compressed.buffer.byteLength < jpegLen) {
-                const compU8 = new Uint8Array(compressed.buffer);
-                // Zero-fill padding
-                streamContent.set(compU8, offset);
-                streamContent.fill(0, offset + compU8.length, end);
-                replaced++;
+
+            const recType = sc[oldOffset + 2] | (sc[oldOffset + 3] << 8);
+            const isJpeg = (recType === 0xF01D);
+            const isPng = (recType === 0xF01E);
+
+            let compressedChunk = null;
+
+            if (isJpeg || isPng) {
+              // Locate raw image bytes starting marker
+              let imgStart = -1;
+              const searchLimit = Math.min(oldOffset + 60, oldOffset + oldSize);
+              if (isJpeg) {
+                for (let k = oldOffset + 8; k < searchLimit - 1; k++) {
+                  if (sc[k] === 0xFF && sc[k + 1] === 0xD8) {
+                    imgStart = k;
+                    break;
+                  }
+                }
+              } else if (isPng) {
+                for (let k = oldOffset + 8; k < searchLimit - 3; k++) {
+                  if (sc[k] === 0x89 && sc[k + 1] === 0x50 && sc[k + 2] === 0x4E && sc[k + 3] === 0x47) {
+                    imgStart = k;
+                    break;
+                  }
+                }
               }
-            } catch (e) {
-              // skip
+
+              if (imgStart !== -1 && oldSize > 1024) {
+                const headerPrefix = sc.slice(oldOffset, imgStart);
+                const rawImageBytes = sc.slice(imgStart, oldOffset + oldSize);
+
+                try {
+                  const compResult = await ImageProcessor.compressImage(rawImageBytes, {
+                    sourceMime: isJpeg ? 'image/jpeg' : 'image/png',
+                    requestedFormat: isJpeg ? 'jpeg' : 'png',
+                    isEmbeddedDoc: true,
+                    maxBoundingBox: options.imageOptions?.maxBoundingBox || { width: 1280, height: 720 },
+                    quality: options.imageOptions?.quality || 75
+                  });
+
+                  if (compResult.buffer && compResult.buffer.byteLength < rawImageBytes.length) {
+                    const compU8 = new Uint8Array(compResult.buffer);
+                    const newTotalBlipSize = headerPrefix.length + compU8.length;
+                    const newRecLen = newTotalBlipSize - 8;
+
+                    // Build updated BLIP
+                    const newBlip = new Uint8Array(newTotalBlipSize);
+                    newBlip.set(headerPrefix, 0);
+                    // Update recLen in header (offset 4..7)
+                    newBlip[4] = newRecLen & 0xFF;
+                    newBlip[5] = (newRecLen >> 8) & 0xFF;
+                    newBlip[6] = (newRecLen >> 16) & 0xFF;
+                    newBlip[7] = (newRecLen >> 24) & 0xFF;
+                    // Copy compressed image bytes
+                    newBlip.set(compU8, headerPrefix.length);
+
+                    compressedChunk = newBlip;
+                    anyCompressed = true;
+                    console.log(`[DocProcessor] Compressed PPT BLIP #${i + 1}: ${oldSize} -> ${newTotalBlipSize} bytes (-${Math.round((1 - newTotalBlipSize / oldSize) * 100)}%)`);
+                  }
+                } catch (e) {
+                  // Keep original on error
+                }
+              }
+            }
+
+            const finalChunk = compressedChunk || sc.slice(oldOffset, oldOffset + oldSize);
+            const finalSize = finalChunk.length;
+
+            // If PowerPoint Document BStoreEntry exists, update size & foDelay
+            if (blip.bstore && pd) {
+              const b = blip.bstore;
+              pd[b.sizeOffset] = finalSize & 0xFF;
+              pd[b.sizeOffset + 1] = (finalSize >> 8) & 0xFF;
+              pd[b.sizeOffset + 2] = (finalSize >> 16) & 0xFF;
+              pd[b.sizeOffset + 3] = (finalSize >> 24) & 0xFF;
+
+              pd[b.delayOffset] = currentNewOffset & 0xFF;
+              pd[b.delayOffset + 1] = (currentNewOffset >> 8) & 0xFF;
+              pd[b.delayOffset + 2] = (currentNewOffset >> 16) & 0xFF;
+              pd[b.delayOffset + 3] = (currentNewOffset >> 24) & 0xFF;
+            }
+
+            newChunks.push(finalChunk);
+            currentNewOffset += finalSize;
+
+            if (onProgress && totalBlips > 0) {
+              onProgress({
+                phase: 'optimizing_pictures',
+                progress: 30 + Math.round(((i + 1) / totalBlips) * 50)
+              });
             }
           }
-          offset = end;
-          continue;
-        }
-        offset++;
-      }
 
-      if (replaced > 0) {
-        picturesEntry.content = streamContent;
+          if (anyCompressed) {
+            // Concatenate all new BLIP chunks into the new Pictures stream
+            const newPicturesStream = new Uint8Array(currentNewOffset);
+            let writePos = 0;
+            for (const chunk of newChunks) {
+              newPicturesStream.set(chunk, writePos);
+              writePos += chunk.length;
+            }
+
+            picturesEntry.content = newPicturesStream;
+            picturesEntry.size = currentNewOffset;
+            if (pptDocEntry && pd) {
+              pptDocEntry.content = pd;
+            }
+            console.log(`[DocProcessor] Pictures stream reduced: ${sc.length} -> ${currentNewOffset} bytes (-${Math.round((1 - currentNewOffset / sc.length) * 100)}%)`);
+          }
+        }
+      } catch (picErr) {
+        console.warn('[DocProcessor] Picture optimization bypassed:', picErr);
       }
     }
 
     if (onProgress) onProgress({ phase: 'rebuilding_cfb', progress: 85 });
-    const outBin = CFB.write(cfb, { type: 'binary' });
+    const outArr = CFB.write(cfb, { type: 'array' });
+    const outU8 = outArr instanceof Uint8Array ? outArr : new Uint8Array(outArr);
+    const finalBuffer = outU8.byteOffset === 0 && outU8.byteLength === outU8.buffer.byteLength
+      ? outU8.buffer
+      : outU8.buffer.slice(outU8.byteOffset, outU8.byteOffset + outU8.byteLength);
 
-    // Convert binary string/array to Uint8Array
-    let outU8;
-    if (typeof outBin === 'string') {
-      outU8 = new Uint8Array(outBin.length);
-      for (let i = 0; i < outBin.length; i++) {
-        outU8[i] = outBin.charCodeAt(i) & 0xFF;
-      }
-    } else {
-      outU8 = new Uint8Array(outBin);
-    }
-
-    const outBlob = new Blob([outU8], { type: 'application/x-ole-storage' });
+    const outBlob = new Blob([finalBuffer], { type: 'application/vnd.ms-powerpoint' });
     if (onProgress) onProgress({ phase: 'completed', progress: 100 });
 
     return {
       blob: outBlob,
-      buffer: outU8.buffer,
-      mime: 'application/x-ole-storage'
+      buffer: finalBuffer,
+      mime: 'application/vnd.ms-powerpoint'
     };
   }
 
