@@ -789,7 +789,7 @@
       DOM.modalCompPreview.innerHTML = `<img src="${compUrl}" alt="Compressed" class="preview-media" />`;
     } else if (item.typeInfo.category === 'video') {
       DOM.modalOrigPreview.innerHTML = `<video src="${origUrl}" controls muted playsinline class="preview-media"></video>`;
-      DOM.modalCompPreview.innerHTML = `<video src="${compUrl}" controls muted playsinline class="preview-media"></video>`;
+      DOM.modalCompPreview.innerHTML = `<video src="${compUrl}" controls playsinline class="preview-media"></video>`;
     }
 
     DOM.compareModal.classList.remove('hidden');
@@ -814,6 +814,13 @@
         selectPreset(card.dataset.preset);
       });
     });
+
+    // Custom configuration accordion inputs auto-select custom preset
+    if (DOM.customAccordion) {
+      DOM.customAccordion.addEventListener('change', () => {
+        selectPreset('custom');
+      });
+    }
 
     // Custom rate control toggle
     DOM.customRateControl.addEventListener('change', (e) => {

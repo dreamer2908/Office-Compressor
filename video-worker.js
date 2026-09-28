@@ -145,96 +145,7 @@
     return supported;
   }
 
-  /**
-   * Parse RIFF AVI container looking for H264 / AVC NAL units
-   */
-  function parseAviH264(buffer) {
-    const view = new DataView(buffer);
-    const u8 = new Uint8Array(buffer);
-    if (u8.length < 12) return null;
 
-    const magic = String.fromCharCode(u8[0], u8[1], u8[2], u8[3]);
-    const format = String.fromCharCode(u8[8], u8[9], u8[10], u8[11]);
-    if (magic !== 'RIFF' || format !== 'AVI ') return null;
-
-    let width = 1920;
-    let height = 1080;
-    let fps = 15;
-    let moviOffset = -1;
-    let moviSize = 0;
-
-    let pos = 12;
-    while (pos < u8.length - 8) {
-      const fourcc = String.fromCharCode(u8[pos], u8[pos+1], u8[pos+2], u8[pos+3]);
-      const size = view.getUint32(pos + 4, true);
-
-      if (fourcc === 'LIST') {
-        const listType = String.fromCharCode(u8[pos+8], u8[pos+9], u8[pos+10], u8[pos+11]);
-        if (listType === 'movi') {
-          moviOffset = pos + 12;
-          moviSize = size - 4;
-          break;
-        }
-      } else if (fourcc === 'strh') {
-        const scale = view.getUint32(pos + 28, true);
-        const rate = view.getUint32(pos + 32, true);
-        if (scale > 0 && rate > 0) {
-          fps = Math.round((rate / scale) * 100) / 100;
-        }
-      } else if (fourcc === 'strf') {
-        width = view.getInt32(pos + 12, true);
-        height = Math.abs(view.getInt32(pos + 16, true));
-      }
-
-      pos += 8 + ((size + 1) & ~1);
-    }
-
-    if (moviOffset === -1) return null;
-
-    const videoChunks = [];
-    pos = moviOffset;
-    const end = Math.min(u8.length, moviOffset + moviSize);
-    let pts = 0;
-    const frameIntervalUs = Math.round(1000000 / (fps || 15));
-
-    while (pos < end - 8) {
-      const tag = String.fromCharCode(u8[pos], u8[pos+1], u8[pos+2], u8[pos+3]);
-      const size = view.getUint32(pos + 4, true);
-
-      if (tag === '00dc' || tag === '00db') {
-        const chunkData = u8.subarray(pos + 8, pos + 8 + size);
-        let isKey = false;
-        // Search for NAL units to detect keyframe (IDR = type 5)
-        for (let i = 0; i < Math.min(chunkData.length - 4, 120); i++) {
-          if (chunkData[i] === 0 && chunkData[i+1] === 0 && (chunkData[i+2] === 1 || (chunkData[i+2] === 0 && chunkData[i+3] === 1))) {
-            const nalByte = chunkData[i+2] === 1 ? chunkData[i+3] : chunkData[i+4];
-            const nalType = nalByte & 0x1F;
-            if (nalType === 5 || nalType === 7) {
-              isKey = true;
-              break;
-            }
-          }
-        }
-
-        videoChunks.push({
-          data: chunkData,
-          pts,
-          isKey
-        });
-        pts += frameIntervalUs;
-      }
-
-      pos += 8 + ((size + 1) & ~1);
-    }
-
-    return {
-      width,
-      height,
-      fps,
-      duration: pts / 1000000,
-      chunks: videoChunks
-    };
-  }
 
   /**
    * Helper: Bit reader for SPS parsing
@@ -744,6 +655,166 @@
   }
 
   /**
+   * Parse RIFF AVI container and extract H.264 video chunks (AVCC format) with SPS/PPS
+   */
+  function parseAviH264(buffer) {
+    const view = new DataView(buffer);
+    const u8 = new Uint8Array(buffer);
+    if (u8.length < 12) return null;
+
+    const magic = String.fromCharCode(u8[0], u8[1], u8[2], u8[3]);
+    const format = String.fromCharCode(u8[8], u8[9], u8[10], u8[11]);
+    if (magic !== 'RIFF' || format !== 'AVI ') return null;
+
+    let width = 1920;
+    let height = 1080;
+    let fps = 15;
+    let moviOffset = -1;
+    let moviSize = 0;
+
+    function parseList(offset, len) {
+      let pos = offset;
+      const end = offset + len;
+      while (pos < end - 8 && pos < u8.length - 8) {
+        const fourcc = String.fromCharCode(u8[pos], u8[pos+1], u8[pos+2], u8[pos+3]);
+        const size = view.getUint32(pos + 4, true);
+
+        if (fourcc === 'LIST') {
+          const listType = String.fromCharCode(u8[pos+8], u8[pos+9], u8[pos+10], u8[pos+11]);
+          if (listType === 'movi') {
+            moviOffset = pos + 12;
+            moviSize = size - 4;
+            return;
+          }
+          parseList(pos + 12, size - 4);
+        } else if (fourcc === 'strh') {
+          const scale = view.getUint32(pos + 28, true);
+          const rate = view.getUint32(pos + 32, true);
+          if (scale > 0 && rate > 0) {
+            fps = Math.round((rate / scale) * 100) / 100;
+          }
+        } else if (fourcc === 'strf') {
+          width = view.getInt32(pos + 12, true);
+          height = Math.abs(view.getInt32(pos + 16, true));
+        }
+
+        pos += 8 + ((size + 1) & ~1);
+        if (moviOffset !== -1) return;
+      }
+    }
+
+    parseList(12, u8.length - 12);
+    if (moviOffset === -1) return null;
+
+    // Helper to extract NAL units from a chunk (ignoring any leading header before first start code)
+    function extractNals(chunkData) {
+      let startIdx = -1;
+      for (let i = 0; i < chunkData.length - 4; i++) {
+        if (chunkData[i] === 0 && chunkData[i+1] === 0 && (chunkData[i+2] === 1 || (chunkData[i+2] === 0 && chunkData[i+3] === 1))) {
+          startIdx = i;
+          break;
+        }
+      }
+      if (startIdx === -1) return [];
+
+      const nals = [];
+      let curStart = startIdx;
+      let curPrefixLen = (chunkData[curStart + 2] === 1) ? 3 : 4;
+      let p = curStart + curPrefixLen;
+
+      while (p < chunkData.length - 3) {
+        if (chunkData[p] === 0 && chunkData[p+1] === 0 && (chunkData[p+2] === 1 || (chunkData[p+2] === 0 && chunkData[p+3] === 1))) {
+          const nextPrefixLen = (chunkData[p+2] === 1) ? 3 : 4;
+          nals.push(chunkData.subarray(curStart + curPrefixLen, p));
+          curStart = p;
+          curPrefixLen = nextPrefixLen;
+          p = curStart + curPrefixLen;
+        } else {
+          p++;
+        }
+      }
+      nals.push(chunkData.subarray(curStart + curPrefixLen));
+      return nals;
+    }
+
+    // Scan chunks
+    const rawChunks = [];
+    let pos = moviOffset;
+    const end = Math.min(u8.length, moviOffset + moviSize);
+    while (pos < end - 8) {
+      const tag = String.fromCharCode(u8[pos], u8[pos+1], u8[pos+2], u8[pos+3]);
+      const size = view.getUint32(pos + 4, true);
+      if (tag === '00dc' || tag === '00db') {
+        rawChunks.push(u8.subarray(pos + 8, pos + 8 + size));
+      }
+      pos += 8 + ((size + 1) & ~1);
+    }
+
+    if (!rawChunks.length) return null;
+
+    // Find SPS and PPS
+    let sps = null, pps = null;
+    for (const chunk of rawChunks) {
+      const nals = extractNals(chunk);
+      for (const n of nals) {
+        const type = n[0] & 0x1f;
+        if (type === 7 && !sps) sps = n;
+        if (type === 8 && !pps) pps = n;
+      }
+      if (sps && pps) break;
+    }
+
+    if (!sps || !pps) return null;
+
+    const spsInfo = parseSpsInfo(sps);
+    const avcc = createAvcC(sps, pps);
+
+    // Build AVCC chunks
+    const videoChunks = [];
+    let pts = 0;
+    const frameIntervalUs = Math.round(1000000 / (fps || 15));
+
+    for (const chunk of rawChunks) {
+      const nals = extractNals(chunk);
+      if (!nals.length) continue;
+
+      let isKey = false;
+      let totalBytes = 0;
+      for (const n of nals) {
+        const type = n[0] & 0x1f;
+        if (type === 5 || type === 7) isKey = true;
+        totalBytes += 4 + n.length;
+      }
+
+      const auBuf = new Uint8Array(totalBytes);
+      const auView = new DataView(auBuf.buffer);
+      let p = 0;
+      for (const n of nals) {
+        auView.setUint32(p, n.length, false);
+        auBuf.set(n, p + 4);
+        p += 4 + n.length;
+      }
+
+      videoChunks.push({
+        data: auBuf,
+        pts,
+        isKey
+      });
+      pts += frameIntervalUs;
+    }
+
+    return {
+      width: spsInfo.displayWidth || width,
+      height: spsInfo.displayHeight || height,
+      fps: fps || 15,
+      duration: pts / 1000000,
+      codec: spsInfo.codec,
+      description: avcc,
+      chunks: videoChunks
+    };
+  }
+
+  /**
    * Downmix multi-channel (5.1 surround or mono) float32 audio to stereo.
    * Standard WAV order: FL(0), FR(1), FC(2), LFE(3), BL(4), BR(5).
    */
@@ -768,7 +839,42 @@
   }
 
   /**
+   * Generates standard 2-byte AudioSpecificConfig for AAC-LC (ISO/IEC 14496-3).
+   * Used for MP4 and Matroska A_AAC track header descriptions.
+   */
+  function getAacAudioSpecificConfig(sampleRate = 48000, channels = 2) {
+    const sampleRates = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350];
+    let srIdx = sampleRates.indexOf(sampleRate);
+    if (srIdx === -1) srIdx = 3; // 48000 default
+    const byte0 = (2 << 3) | ((srIdx >> 1) & 0x07);
+    const byte1 = ((srIdx & 0x01) << 7) | ((channels & 0x0f) << 3);
+    return new Uint8Array([byte0, byte1]);
+  }
+
+  /**
+   * Maps a standard WebCodecs video codec string (e.g., avc1.640028, vp09.00.10.08)
+   * to the appropriate container-level codec identifier for Mp4Muxer or WebMMuxer.
+   */
+  function getMuxerVideoCodec(container, codecStr = 'avc1.4D401F') {
+    if (container === 'mkv') {
+      if (codecStr.startsWith('avc1') || codecStr.startsWith('h264')) return 'V_MPEG4/ISO/AVC';
+      if (codecStr.startsWith('vp09') || codecStr.startsWith('vp9')) return 'V_VP9';
+      if (codecStr.startsWith('av01') || codecStr.startsWith('av1')) return 'V_AV1';
+      if (codecStr.startsWith('hvc1') || codecStr.startsWith('hev1')) return 'V_MPEGH/ISO/HEVC';
+      if (codecStr.startsWith('vp8')) return 'V_VP8';
+      return 'V_MPEG4/ISO/AVC';
+    } else {
+      if (codecStr.startsWith('avc1') || codecStr.startsWith('h264')) return 'avc';
+      if (codecStr.startsWith('vp09') || codecStr.startsWith('vp9')) return 'vp9';
+      if (codecStr.startsWith('av01') || codecStr.startsWith('av1')) return 'av1';
+      if (codecStr.startsWith('hvc1') || codecStr.startsWith('hev1')) return 'hevc';
+      return 'avc';
+    }
+  }
+
+  /**
    * Direct MTS / M2TS Demuxing and WebCodecs Transcoding Pipeline (Video + AC-3 Audio)
+   * Supports both MP4 and Matroska (MKV) containers and preserves audio as AAC or Opus.
    */
   async function transcodeMtsDirect(mtsBuffer, options, onProgress) {
     const parsed = parseMtsH264(mtsBuffer);
@@ -783,9 +889,16 @@
       qualityFactor = 'good',
       exactBitrate = 1500,
       targetSizeBytes = null,
-      audioMode = 'copy',
-      audioBitrate: requestedAudioBitrate = 128000
+      codec = 'avc1.4D401F',
+      container = 'mp4',
+      audioMode = 'aac',
+      audioBitrate: requestedAudioBitrate = 128000,
+      isEmbeddedDoc = false
     } = options;
+
+    const finalContainer = isEmbeddedDoc ? 'mp4' : (container === 'mkv' ? 'mkv' : 'mp4');
+    const finalCodec = isEmbeddedDoc ? 'avc1.4D401F' : (codec || 'avc1.4D401F');
+    const finalAudioMode = isEmbeddedDoc ? 'aac' : audioMode;
 
     const origW = parsed.displayWidth || 1920;
     const origH = parsed.displayHeight || 1080;
@@ -808,7 +921,7 @@
     const audioBitrate = Number(requestedAudioBitrate) || 128000;
     const DecodeAC3Lib = globalScope.DecodeAC3 || (typeof window !== 'undefined' ? window.DecodeAC3 : null);
 
-    if (audioMode !== 'mute' && parsed.rawAc3 && DecodeAC3Lib && typeof AudioEncoder !== 'undefined') {
+    if (finalAudioMode !== 'mute' && parsed.rawAc3 && DecodeAC3Lib && typeof AudioEncoder !== 'undefined') {
       try {
         if (onProgress) onProgress({ phase: 'decoding-audio', progress: 5 });
         decodedAudio = await DecodeAC3Lib.decode(parsed.rawAc3);
@@ -836,51 +949,119 @@
       audioBitrate: hasAudio ? audioBitrate : 0
     });
 
-    const Mp4MuxerLib = globalScope.Mp4Muxer || window.Mp4Muxer;
-    if (!Mp4MuxerLib) throw new Error('Mp4Muxer library not loaded');
-    const muxerTarget = new Mp4MuxerLib.ArrayBufferTarget();
-    const muxerOptions = {
-      target: muxerTarget,
-      video: {
-        codec: 'avc',
-        width: outW,
-        height: outH
-      },
-      firstTimestampBehavior: 'offset',
-      fastStart: 'in-memory'
-    };
+    // Select Audio Codec (AAC or Opus)
+    let effectiveAudioCodec = 'aac';
+    let audioConfigCodec = 'mp4a.40.2';
+    const audioSampleRate = (decodedAudio && decodedAudio.sampleRate) || 48000;
 
+    if (hasAudio) {
+      if (finalAudioMode === 'opus') {
+        try {
+          const supOpus = await AudioEncoder.isConfigSupported({
+            codec: 'opus',
+            sampleRate: 48000,
+            numberOfChannels: 2,
+            bitrate: audioBitrate
+          });
+          if (supOpus && supOpus.supported) {
+            effectiveAudioCodec = 'opus';
+            audioConfigCodec = 'opus';
+          }
+        } catch (e) {}
+      } else {
+        try {
+          const supAac = await AudioEncoder.isConfigSupported({
+            codec: 'mp4a.40.2',
+            sampleRate: audioSampleRate,
+            numberOfChannels: 2,
+            bitrate: audioBitrate
+          });
+          if (supAac && supAac.supported) {
+            effectiveAudioCodec = 'aac';
+            audioConfigCodec = 'mp4a.40.2';
+          }
+        } catch (e) {}
+      }
+    }
+
+    // Initialize Muxer (WebMMuxer for MKV, Mp4Muxer for MP4)
+    let muxer;
+    let muxerTarget;
+
+    if (finalContainer === 'mkv') {
+      const WebMMuxerLib = globalScope.WebMMuxer || window.WebMMuxer;
+      if (!WebMMuxerLib) throw new Error('WebMMuxer library not loaded');
+      muxerTarget = new WebMMuxerLib.ArrayBufferTarget();
+      muxer = new WebMMuxerLib.Muxer({
+        target: muxerTarget,
+        type: 'matroska',
+        firstTimestampBehavior: 'offset',
+        video: {
+          codec: getMuxerVideoCodec('mkv', finalCodec),
+          width: outW,
+          height: outH
+        },
+        audio: hasAudio ? {
+          codec: effectiveAudioCodec === 'opus' ? 'A_OPUS' : 'A_AAC',
+          numberOfChannels: 2,
+          sampleRate: audioSampleRate
+        } : undefined
+      });
+    } else {
+      const Mp4MuxerLib = globalScope.Mp4Muxer || window.Mp4Muxer;
+      if (!Mp4MuxerLib) throw new Error('Mp4Muxer library not loaded');
+      muxerTarget = new Mp4MuxerLib.ArrayBufferTarget();
+      muxer = new Mp4MuxerLib.Muxer({
+        target: muxerTarget,
+        firstTimestampBehavior: 'offset',
+        fastStart: 'in-memory',
+        video: {
+          codec: getMuxerVideoCodec('mp4', finalCodec),
+          width: outW,
+          height: outH
+        },
+        audio: hasAudio ? {
+          codec: effectiveAudioCodec === 'opus' ? 'opus' : 'aac',
+          numberOfChannels: 2,
+          sampleRate: audioSampleRate
+        } : undefined
+      });
+    }
+
+    // Configure AudioEncoder (Declared and configured after muxer to eliminate TDZ reference bugs)
     let audioEncoder = null;
     let audioEncoderError = null;
 
-    if (hasAudio && decodedAudio) {
-      const aacConfig = {
-        codec: 'mp4a.40.2',
-        sampleRate: decodedAudio.sampleRate || 48000,
-        numberOfChannels: 2,
-        bitrate: audioBitrate
-      };
+    if (hasAudio) {
+      const aacDesc = getAacAudioSpecificConfig(audioSampleRate, 2);
       try {
-        const sup = await AudioEncoder.isConfigSupported(aacConfig);
-        if (sup && sup.supported) {
-          audioEncoder = new AudioEncoder({
-            output: (chunk, metadata) => muxer.addAudioChunk(chunk, metadata),
-            error: (e) => { audioEncoderError = e; console.error('[MTS AudioEncoder Error]', e); }
-          });
-          await audioEncoder.configure(aacConfig);
-          muxerOptions.audio = {
-            codec: 'aac',
-            numberOfChannels: 2,
-            sampleRate: decodedAudio.sampleRate || 48000
-          };
-        }
+        audioEncoder = new AudioEncoder({
+          output: (chunk, metadata) => {
+            if (effectiveAudioCodec === 'aac') {
+              if (!metadata || !metadata.decoderConfig || !metadata.decoderConfig.description) {
+                metadata = metadata || {};
+                metadata.decoderConfig = metadata.decoderConfig || {};
+                metadata.decoderConfig.description = aacDesc;
+              }
+            }
+            muxer.addAudioChunk(chunk, metadata);
+          },
+          error: (e) => {
+            audioEncoderError = e;
+            console.error('[MTS AudioEncoder Error]', e);
+          }
+        });
+        await audioEncoder.configure({
+          codec: audioConfigCodec,
+          sampleRate: audioSampleRate,
+          numberOfChannels: 2,
+          bitrate: audioBitrate
+        });
       } catch (aeErr) {
         console.warn('[MTS] AudioEncoder configure failed, fallback to video-only:', aeErr);
         audioEncoder = null;
       }
     }
-
-    const muxer = new Mp4MuxerLib.Muxer(muxerOptions);
 
     let encoderError = null;
     const encoder = new VideoEncoder({
@@ -889,7 +1070,7 @@
     });
 
     await encoder.configure({
-      codec: 'avc1.4D401F',
+      codec: finalCodec,
       width: outW,
       height: outH,
       bitrate: videoBitrate,
@@ -982,16 +1163,13 @@
     if (audioEncoder && stereoChannels) {
       if (onProgress) onProgress({ phase: 'encoding-audio', progress: 90 });
       const [leftCh, rightCh] = stereoChannels;
-      const sampleRate = decodedAudio.sampleRate || 48000;
+      const sampleRate = audioSampleRate;
       const totalSamples = leftCh.length;
       const CHUNK_SIZE = 1024;
       let startSample = 0;
-      let initialTimestampUs = 0;
 
       if (parsed.audioOffsetUs < 0) {
         startSample = Math.min(totalSamples, Math.round((-parsed.audioOffsetUs * sampleRate) / 1000000));
-      } else if (parsed.audioOffsetUs > 0) {
-        initialTimestampUs = parsed.audioOffsetUs;
       }
 
       for (let s = startSample; s < totalSamples; s += CHUNK_SIZE) {
@@ -1002,7 +1180,7 @@
         planar.set(rightCh.subarray(s, s + numFrames), numFrames);
 
         const sampleOffset = s - startSample;
-        const timestampUs = initialTimestampUs + Math.round((sampleOffset * 1000000) / sampleRate);
+        const timestampUs = Math.round((sampleOffset * 1000000) / sampleRate);
 
         const aData = new AudioData({
           format: 'f32-planar',
@@ -1026,19 +1204,20 @@
 
     return {
       buffer: muxerTarget.buffer,
-      mime: 'video/mp4',
+      mime: finalContainer === 'mp4' ? 'video/mp4' : 'video/x-matroska',
       width: outW,
       height: outH,
       fps: effectiveFps,
       duration: parsed.duration,
-      container: 'mp4',
-      codec: 'avc1.4D401F'
+      container: finalContainer,
+      codec: finalCodec
     };
   }
 
   /**
    * Universal Video Processor using HTML5 <video> and canvas rendering.
    * Works on any video container and codec supported by the browser media engine.
+   * Automatically extracts and transcodes audio tracks via Web Audio API and WebCodecs.
    */
   async function transcodeViaVideoElement(fileBlob, options, onProgress) {
     const {
@@ -1055,8 +1234,8 @@
       isEmbeddedDoc = false
     } = options;
 
-    const finalContainer = isEmbeddedDoc ? 'mp4' : container;
-    const finalCodec = isEmbeddedDoc ? 'avc1.4D401F' : codec;
+    const finalContainer = isEmbeddedDoc ? 'mp4' : (container === 'mkv' ? 'mkv' : 'mp4');
+    const finalCodec = isEmbeddedDoc ? 'avc1.4D401F' : (codec || 'avc1.4D401F');
     const finalAudioMode = isEmbeddedDoc ? 'aac' : audioMode;
 
     const videoUrl = URL.createObjectURL(fileBlob);
@@ -1074,7 +1253,8 @@
 
       const origW = video.videoWidth || 1280;
       const origH = video.videoHeight || 720;
-      const duration = video.duration || 1;
+      const rawDuration = video.duration || 1;
+      const duration = (options.maxDuration && options.maxDuration < rawDuration) ? options.maxDuration : rawDuration;
 
       // Target dimension calculation
       const targetDim = calculateVideoDimensions(origW, origH, targetResolution);
@@ -1103,47 +1283,156 @@
         audioBitrate: finalAudioMode === 'mute' ? 0 : audioBitrate
       });
 
-      console.log(`[VideoProcessor] Encoding ${origW}x${origH} -> ${outW}x${outH} @ ${effectiveFps}fps, ${Math.round(videoBitrate / 1000)}kbps (${finalCodec})`);
+      console.log(`[VideoProcessor] Encoding ${origW}x${origH} -> ${outW}x${outH} @ ${effectiveFps}fps, ${Math.round(videoBitrate / 1000)}kbps (${finalCodec}) in ${finalContainer}`);
+
+      // Attempt to decode audio via AudioContext if audio is requested
+      let decodedAudioBuffer = null;
+      let hasAudio = false;
+      let stereoChannels = null;
+      let audioSampleRate = 48000;
+
+      if (finalAudioMode !== 'mute') {
+        try {
+          const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+          try {
+            const rawBuf = await fileBlob.arrayBuffer();
+            decodedAudioBuffer = await audioCtx.decodeAudioData(rawBuf.slice(0));
+            if (decodedAudioBuffer && decodedAudioBuffer.length > 0) {
+              audioSampleRate = decodedAudioBuffer.sampleRate;
+              const chCount = decodedAudioBuffer.numberOfChannels;
+              if (chCount === 1) {
+                const ch0 = decodedAudioBuffer.getChannelData(0);
+                stereoChannels = [ch0, ch0];
+              } else if (chCount === 2) {
+                stereoChannels = [decodedAudioBuffer.getChannelData(0), decodedAudioBuffer.getChannelData(1)];
+              } else {
+                const chs = [];
+                for (let c = 0; c < chCount; c++) chs.push(decodedAudioBuffer.getChannelData(c));
+                stereoChannels = downmixToStereo(chs);
+              }
+              hasAudio = stereoChannels && stereoChannels[0].length > 0;
+            }
+          } finally {
+            await audioCtx.close();
+          }
+        } catch (aErr) {
+          console.log('[VideoProcessor] AudioContext.decodeAudioData skipped or video has no audio track:', aErr);
+          hasAudio = false;
+          stereoChannels = null;
+        }
+      }
+
+      // Determine Audio Codec (AAC or Opus)
+      let effectiveAudioCodec = 'aac';
+      let audioConfigCodec = 'mp4a.40.2';
+
+      if (hasAudio) {
+        if (finalAudioMode === 'opus') {
+          try {
+            const supOpus = await AudioEncoder.isConfigSupported({
+              codec: 'opus',
+              sampleRate: 48000,
+              numberOfChannels: 2,
+              bitrate: audioBitrate
+            });
+            if (supOpus && supOpus.supported) {
+              effectiveAudioCodec = 'opus';
+              audioConfigCodec = 'opus';
+            }
+          } catch (e) {}
+        } else {
+          try {
+            const supAac = await AudioEncoder.isConfigSupported({
+              codec: 'mp4a.40.2',
+              sampleRate: audioSampleRate,
+              numberOfChannels: 2,
+              bitrate: audioBitrate
+            });
+            if (supAac && supAac.supported) {
+              effectiveAudioCodec = 'aac';
+              audioConfigCodec = 'mp4a.40.2';
+            }
+          } catch (e) {}
+        }
+      }
 
       // Prepare Muxer
       let muxer;
       let muxerTarget;
 
-      if (finalContainer === 'mp4') {
-        const Mp4MuxerLib = globalScope.Mp4Muxer || window.Mp4Muxer;
-        if (!Mp4MuxerLib) throw new Error('Mp4Muxer library not loaded');
-        muxerTarget = new Mp4MuxerLib.ArrayBufferTarget();
-        muxer = new Mp4MuxerLib.Muxer({
-          target: muxerTarget,
-          video: {
-            codec: 'avc',
-            width: outW,
-            height: outH
-          },
-          audio: finalAudioMode !== 'mute' ? {
-            codec: 'aac',
-            numberOfChannels: 2,
-            sampleRate: 48000
-          } : undefined,
-          fastStart: 'in-memory'
-        });
-      } else {
+      if (finalContainer === 'mkv') {
         const WebMMuxerLib = globalScope.WebMMuxer || window.WebMMuxer;
         if (!WebMMuxerLib) throw new Error('WebMMuxer library not loaded');
         muxerTarget = new WebMMuxerLib.ArrayBufferTarget();
         muxer = new WebMMuxerLib.Muxer({
           target: muxerTarget,
+          type: 'matroska',
+          firstTimestampBehavior: 'offset',
           video: {
-            codec: finalCodec.startsWith('vp09') ? 'V_VP9' : (finalCodec.startsWith('av01') ? 'V_AV1' : 'V_VP8'),
+            codec: getMuxerVideoCodec('mkv', finalCodec),
             width: outW,
             height: outH
           },
-          audio: finalAudioMode !== 'mute' ? {
-            codec: 'A_OPUS',
+          audio: hasAudio ? {
+            codec: effectiveAudioCodec === 'opus' ? 'A_OPUS' : 'A_AAC',
             numberOfChannels: 2,
-            sampleRate: 48000
+            sampleRate: audioSampleRate
           } : undefined
         });
+      } else {
+        const Mp4MuxerLib = globalScope.Mp4Muxer || window.Mp4Muxer;
+        if (!Mp4MuxerLib) throw new Error('Mp4Muxer library not loaded');
+        muxerTarget = new Mp4MuxerLib.ArrayBufferTarget();
+        muxer = new Mp4MuxerLib.Muxer({
+          target: muxerTarget,
+          firstTimestampBehavior: 'offset',
+          fastStart: 'in-memory',
+          video: {
+            codec: getMuxerVideoCodec('mp4', finalCodec),
+            width: outW,
+            height: outH
+          },
+          audio: hasAudio ? {
+            codec: effectiveAudioCodec === 'opus' ? 'opus' : 'aac',
+            numberOfChannels: 2,
+            sampleRate: audioSampleRate
+          } : undefined
+        });
+      }
+
+      // Prepare AudioEncoder if audio exists
+      let audioEncoder = null;
+      let audioEncoderError = null;
+
+      if (hasAudio && typeof AudioEncoder !== 'undefined') {
+        const aacDesc = getAacAudioSpecificConfig(audioSampleRate, 2);
+        try {
+          audioEncoder = new AudioEncoder({
+            output: (chunk, metadata) => {
+              if (effectiveAudioCodec === 'aac') {
+                if (!metadata || !metadata.decoderConfig || !metadata.decoderConfig.description) {
+                  metadata = metadata || {};
+                  metadata.decoderConfig = metadata.decoderConfig || {};
+                  metadata.decoderConfig.description = aacDesc;
+                }
+              }
+              muxer.addAudioChunk(chunk, metadata);
+            },
+            error: (e) => {
+              audioEncoderError = e;
+              console.error('[Video AudioEncoder Error]', e);
+            }
+          });
+          await audioEncoder.configure({
+            codec: audioConfigCodec,
+            sampleRate: audioSampleRate,
+            numberOfChannels: 2,
+            bitrate: audioBitrate
+          });
+        } catch (aeErr) {
+          console.warn('[VideoProcessor] AudioEncoder configure failed, proceeding video-only:', aeErr);
+          audioEncoder = null;
+        }
       }
 
       // Configure VideoEncoder
@@ -1187,11 +1476,21 @@
       while (currentTime < duration) {
         if (encoderError) throw encoderError;
 
-        // Seek video
-        video.currentTime = currentTime;
-        await new Promise((res) => {
-          video.onseeked = () => res();
-        });
+        // Seek video if not already at current time
+        if (Math.abs(video.currentTime - currentTime) > 0.001) {
+          await new Promise((res) => {
+            let done = false;
+            const onSeek = () => {
+              if (done) return;
+              done = true;
+              video.removeEventListener('seeked', onSeek);
+              res();
+            };
+            video.addEventListener('seeked', onSeek, { once: true });
+            video.currentTime = currentTime;
+            setTimeout(onSeek, 250);
+          });
+        }
 
         // Draw and scale frame
         ctx.drawImage(video, 0, 0, outW, outH);
@@ -1211,7 +1510,7 @@
         currentTime += frameStep;
 
         if (onProgress && frameIndex % 5 === 0) {
-          const pct = Math.min(95, Math.round((frameIndex / totalFrames) * 100));
+          const pct = Math.min(85, Math.round((frameIndex / totalFrames) * 85));
           onProgress({
             phase: 'encoding',
             progress: pct,
@@ -1228,6 +1527,37 @@
 
       await encoder.flush();
       encoder.close();
+
+      // Encode audio if available
+      if (audioEncoder && stereoChannels) {
+        if (onProgress) onProgress({ phase: 'encoding-audio', progress: 90 });
+        const [leftCh, rightCh] = stereoChannels;
+        const totalSamples = Math.min(leftCh.length, Math.ceil(duration * audioSampleRate));
+        const CHUNK_SIZE = 1024;
+        for (let s = 0; s < totalSamples; s += CHUNK_SIZE) {
+          if (audioEncoderError) throw audioEncoderError;
+          const numFrames = Math.min(CHUNK_SIZE, totalSamples - s);
+          const planar = new Float32Array(numFrames * 2);
+          planar.set(leftCh.subarray(s, s + numFrames), 0);
+          planar.set(rightCh.subarray(s, s + numFrames), numFrames);
+
+          const timestampUs = Math.round((s * 1000000) / audioSampleRate);
+
+          const aData = new AudioData({
+            format: 'f32-planar',
+            sampleRate: audioSampleRate,
+            numberOfChannels: 2,
+            numberOfFrames: numFrames,
+            timestamp: timestampUs,
+            data: planar
+          });
+
+          audioEncoder.encode(aData);
+          aData.close();
+        }
+        await audioEncoder.flush();
+        audioEncoder.close();
+      }
 
       // Finalize Muxer
       muxer.finalize();
@@ -1276,6 +1606,9 @@
       isEmbeddedDoc = false
     } = options;
 
+    const finalContainer = isEmbeddedDoc ? 'mp4' : (container === 'mkv' ? 'mkv' : 'mp4');
+    const finalCodec = isEmbeddedDoc ? 'avc1.4D401F' : (codec || 'avc1.4D401F');
+
     const origW = parsed.width;
     const origH = parsed.height;
     const origFps = parsed.fps || 15;
@@ -1296,18 +1629,38 @@
       audioBitrate: 0
     });
 
-    const Mp4MuxerLib = globalScope.Mp4Muxer || window.Mp4Muxer;
-    if (!Mp4MuxerLib) throw new Error('Mp4Muxer library not loaded');
-    const muxerTarget = new Mp4MuxerLib.ArrayBufferTarget();
-    const muxer = new Mp4MuxerLib.Muxer({
-      target: muxerTarget,
-      video: {
-        codec: 'avc',
-        width: outW,
-        height: outH
-      },
-      fastStart: 'in-memory'
-    });
+    let muxer;
+    let muxerTarget;
+
+    if (finalContainer === 'mkv') {
+      const WebMMuxerLib = globalScope.WebMMuxer || window.WebMMuxer;
+      if (!WebMMuxerLib) throw new Error('WebMMuxer library not loaded');
+      muxerTarget = new WebMMuxerLib.ArrayBufferTarget();
+      muxer = new WebMMuxerLib.Muxer({
+        target: muxerTarget,
+        type: 'matroska',
+        firstTimestampBehavior: 'offset',
+        video: {
+          codec: getMuxerVideoCodec('mkv', finalCodec),
+          width: outW,
+          height: outH
+        }
+      });
+    } else {
+      const Mp4MuxerLib = globalScope.Mp4Muxer || window.Mp4Muxer;
+      if (!Mp4MuxerLib) throw new Error('Mp4Muxer library not loaded');
+      muxerTarget = new Mp4MuxerLib.ArrayBufferTarget();
+      muxer = new Mp4MuxerLib.Muxer({
+        target: muxerTarget,
+        firstTimestampBehavior: 'offset',
+        fastStart: 'in-memory',
+        video: {
+          codec: getMuxerVideoCodec('mp4', finalCodec),
+          width: outW,
+          height: outH
+        }
+      });
+    }
 
     let encoderError = null;
     const encoder = new VideoEncoder({
@@ -1316,7 +1669,7 @@
     });
 
     await encoder.configure({
-      codec: 'avc1.4D401F',
+      codec: finalCodec,
       width: outW,
       height: outH,
       bitrate: videoBitrate,
@@ -1330,7 +1683,7 @@
       : document.createElement('canvas');
     canvas.width = outW;
     canvas.height = outH;
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { alpha: false });
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
 
@@ -1345,8 +1698,9 @@
         // Frame rate thinning
         if (frame.timestamp - lastEncodedTimestampUs >= minIntervalUs * 0.85) {
           ctx.drawImage(frame, 0, 0, outW, outH);
+          const outTimestampUs = Math.round(encodedFrameCount * (1000000 / effectiveFps));
           const scaledFrame = new VideoFrame(canvas, {
-            timestamp: frame.timestamp,
+            timestamp: outTimestampUs,
             duration: minIntervalUs
           });
           const isKey = encodedFrameCount % (effectiveFps * 2) === 0;
@@ -1361,10 +1715,9 @@
     });
 
     await decoder.configure({
-      codec: 'avc1.4D401F',
-      codedWidth: origW,
-      codedHeight: origH,
-      hardwareAcceleration: 'prefer-hardware'
+      codec: parsed.codec,
+      description: parsed.description,
+      hardwareAcceleration: 'no-preference'
     });
 
     const totalChunks = parsed.chunks.length;
@@ -1403,13 +1756,13 @@
 
     return {
       buffer: muxerTarget.buffer,
-      mime: 'video/mp4',
+      mime: finalContainer === 'mp4' ? 'video/mp4' : 'video/x-matroska',
       width: outW,
       height: outH,
       fps: effectiveFps,
       duration: parsed.duration,
-      container: 'mp4',
-      codec: 'avc1.4D401F'
+      container: finalContainer,
+      codec: finalCodec
     };
   }
 

@@ -24,12 +24,13 @@ const MIME_TYPES = {
   '.mp4': 'video/mp4',
   '.mkv': 'video/x-matroska',
   '.webm': 'video/webm',
+  '.mov': 'video/quicktime',
   '.mts': 'video/mp2t',
   '.m2ts': 'video/mp2t'
 };
 
 const server = http.createServer((req, res) => {
-  let reqPath = decodeURI(req.url.split('?')[0]);
+  let reqPath = decodeURIComponent(req.url.split('?')[0]);
 
   if (reqPath === '/api/test-log' && req.method === 'POST') {
     let body = '';
@@ -38,6 +39,21 @@ const server = http.createServer((req, res) => {
       console.log('[BROWSER TEST LOG]', body);
       res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
       res.end(JSON.stringify({ ok: true }));
+    });
+    return;
+  }
+
+  if (reqPath === '/api/save-test-file' && req.method === 'POST') {
+    const filename = req.headers['x-filename'] || 'test_output.bin';
+    const outPath = path.join(BASE_DIR, '..', 'tests', filename);
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const full = Buffer.concat(chunks);
+      fs.writeFileSync(outPath, full);
+      console.log(`[SERVER] Saved test file: ${outPath} (${full.length} bytes)`);
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ ok: true, path: outPath, size: full.length }));
     });
     return;
   }
