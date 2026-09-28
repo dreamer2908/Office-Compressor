@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Office Compressor - Client-Side Document, Image & Video Optimizer</title>
+  <meta name="description" content="100% Client-side high-efficiency compressor for Word, PowerPoint, Excel, PDF, images, and videos. Zero-install email size reducer with embedded video compression.">
+  <link rel="stylesheet" href="styles.css">
+
+  <!-- Resilient Dependency Bootstrap Loader (Loads local ./libs/*.js with automatic CDN fallback) -->
+  <script src="loader.js"></script>
+
+  <!-- Compression Engines -->
+  <script src="image-worker.js"></script>
+  <script src="video-worker.js"></script>
+  <script src="doc-processor.js"></script>
+
+  <!-- Application UI Controller -->
+  <script src="app.js" defer></script>
+</head>
+<body>
+
+  <!-- Top Navigation Header -->
+  <header class="app-header">
+    <div class="header-container">
+      <div class="brand-section">
+        <div class="brand-icon">⚡</div>
+        <div>
+          <h1 class="brand-title">Office Compressor</h1>
+          <p class="brand-subtitle">Zero-Install Client-Side Optimizer</p>
+        </div>
+      </div>
+
+      <div class="header-actions">
+        <span id="dep-status-pill" class="dep-pill dep-ok" title="All compression dependencies loaded">8/8 Libs Ready</span>
+        <button id="theme-toggle" class="btn btn-secondary btn-sm" aria-label="Toggle theme">☀️ Light</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Application Body -->
+  <main class="main-container">
+
+    <!-- Hero Section -->
+    <section class="hero-section">
+      <h2 class="hero-title">Compress Documents, Images & Videos <span class="hero-highlight">Privately</span></h2>
+      <p class="hero-description">
+        100% browser-based compression. All processing runs in memory on your device with no server uploads.
+        Shrink files effortlessly to fit email limits.
+      </p>
+    </section>
+
+    <!-- Presets Section -->
+    <section>
+      <div class="section-header">
+        <h3 class="section-title"><span>🎯</span> Select Compression Preset</h3>
+      </div>
+
+      <div class="preset-grid">
+        <!-- Email Strict -->
+        <div class="preset-card" data-preset="email-strict">
+          <div class="preset-header">
+            <span class="preset-icon">✉️</span>
+            <span class="preset-badge">&lt; 10 MB</span>
+          </div>
+          <h4 class="preset-title">Email Strict</h4>
+          <p class="preset-desc">Maximum reduction for strict enterprise mailboxes (Exchange / Outlook limits).</p>
+          <div class="preset-specs">
+            <div class="spec-item"><span>🎬</span> Video: 480p @ 15fps, Low Bitrate (0.05), AAC 64k</div>
+            <div class="spec-item"><span>🖼️</span> Images/Docs: 720p Max, Q: 60</div>
+          </div>
+        </div>
+
+        <!-- Email Standard (Default) -->
+        <div class="preset-card active" data-preset="email-standard">
+          <div class="preset-header">
+            <span class="preset-icon">🚀</span>
+            <span class="preset-badge">&lt; 25 MB</span>
+          </div>
+          <h4 class="preset-title">Email Standard</h4>
+          <p class="preset-desc">Recommended balance of quality and size for standard email attachments (Gmail / Outlook).</p>
+          <div class="preset-specs">
+            <div class="spec-item"><span>🎬</span> Video: 720p @ 15fps, Good Bitrate (0.08), AAC 96k</div>
+            <div class="spec-item"><span>🖼️</span> Images/Docs: 1080p Max, Q: 75</div>
+          </div>
+        </div>
+
+        <!-- Screen Presentation -->
+        <div class="preset-card" data-preset="screen-presentation">
+          <div class="preset-header">
+            <span class="preset-icon">🖥️</span>
+            <span class="preset-badge">High Fidelity</span>
+          </div>
+          <h4 class="preset-title">Screen Presentation</h4>
+          <p class="preset-desc">Crisp visuals for slide decks, projector displays, and UI screenshots.</p>
+          <div class="preset-specs">
+            <div class="spec-item"><span>🎬</span> Video: 1080p @ Original fps, High Bitrate (0.10)</div>
+            <div class="spec-item"><span>🖼️</span> Images/Docs: 1080p Max, Q: 85 (PNG for charts)</div>
+          </div>
+        </div>
+
+        <!-- Custom Mode -->
+        <div class="preset-card" data-preset="custom">
+          <div class="preset-header">
+            <span class="preset-icon">⚙️</span>
+            <span class="preset-badge">Advanced</span>
+          </div>
+          <h4 class="preset-title">Custom Mode</h4>
+          <p class="preset-desc">Full manual control over codecs, resolutions, framerates, and quality settings.</p>
+          <div class="preset-specs">
+            <div class="spec-item"><span>🔧</span> VideoCodecs: AVC, HEVC, VP9, AV1</div>
+            <div class="spec-item"><span>🎨</span> Images: WebP, JPEG, PNG with slider</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Custom Options Drawer (Revealed when Custom is clicked) -->
+    <section id="custom-accordion" class="custom-panel hidden">
+      <div class="custom-grid">
+        <!-- Video Custom Controls -->
+        <div>
+          <h4 class="custom-group-title"><span>🎬</span> Video Compression Options</h4>
+          
+          <div class="control-row">
+            <label for="custom-video-res">Resolution Cap</label>
+            <select id="custom-video-res">
+              <option value="original">Original Dimensions</option>
+              <option value="1080p" selected>1080p (1920 × 1080)</option>
+              <option value="720p">720p (1280 × 720)</option>
+              <option value="480p">480p (854 × 480)</option>
+            </select>
+          </div>
+
+          <div class="control-row">
+            <label for="custom-video-fps">Framerate</label>
+            <select id="custom-video-fps">
+              <option value="original">Original Framerate</option>
+              <option value="30">30 fps</option>
+              <option value="24">24 fps</option>
+              <option value="15" selected>15 fps (Recommended)</option>
+              <option value="10">10 fps</option>
+            </select>
+          </div>
+
+          <div class="control-row">
+            <label for="custom-rate-control">Rate Control Mode</label>
+            <select id="custom-rate-control">
+              <option value="qualityFactor" selected>Dynamic Quality Factor</option>
+              <option value="bitrate">Target Bitrate (kbps)</option>
+              <option value="targetSize">Target File Size (MB)</option>
+            </select>
+          </div>
+
+          <div id="group-quality-factor" class="control-row">
+            <label for="custom-quality-factor">Quality Factor</label>
+            <select id="custom-quality-factor">
+              <option value="low">Low (0.05) - Compact</option>
+              <option value="good" selected>Good (0.08) - Balanced</option>
+              <option value="high">High (0.10) - Presentation</option>
+              <option value="very-high">Very High (0.15) - Archival</option>
+            </select>
+          </div>
+
+          <div id="group-exact-bitrate" class="control-row hidden">
+            <label for="custom-exact-bitrate">Video Bitrate (kbps)</label>
+            <input type="number" id="custom-exact-bitrate" min="150" max="25000" step="50" value="1200">
+          </div>
+
+          <div id="group-target-size" class="control-row hidden">
+            <label for="custom-target-size">Target Size (MB)</label>
+            <input type="number" id="custom-target-size" min="1" max="500" step="1" value="20">
+          </div>
+
+          <div class="control-row">
+            <label for="custom-video-codec">Hardware Codec</label>
+            <select id="custom-video-codec">
+              <option value="avc1.4D401F">AVC / H.264 (Detecting support...)</option>
+            </select>
+          </div>
+
+          <div class="control-row">
+            <label for="custom-audio-mode">Audio Mode</label>
+            <select id="custom-audio-mode">
+              <option value="aac" selected>Transcode AAC</option>
+              <option value="opus">Transcode Opus</option>
+              <option value="passthrough">Pass-through Raw</option>
+              <option value="mute">Mute Audio</option>
+            </select>
+          </div>
+
+          <div class="control-row">
+            <label for="custom-audio-bitrate">Audio Bitrate</label>
+            <select id="custom-audio-bitrate">
+              <option value="64000">64 kbps (Voice / Low)</option>
+              <option value="96000" selected>96 kbps (Standard)</option>
+              <option value="128000">128 kbps (High Fidelity)</option>
+            </select>
+          </div>
+
+          <div class="control-row">
+            <label for="custom-container">Output Container</label>
+            <select id="custom-container">
+              <option value="mp4" selected>MP4 Container (.mp4)</option>
+              <option value="mkv">Matroska / WebM (.mkv)</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Image Custom Controls -->
+        <div>
+          <h4 class="custom-group-title"><span>🖼️</span> Standalone & Embedded Image Options</h4>
+
+          <div class="control-row">
+            <label for="custom-img-format">Output Format</label>
+            <select id="custom-img-format">
+              <option value="auto" selected>Auto-detect (PNG for UI, WebP for Photos)</option>
+              <option value="webp">WebP (High Compression)</option>
+              <option value="jpeg">JPEG (Standard Photography)</option>
+              <option value="png">PNG (Lossless / Diagrams)</option>
+            </select>
+          </div>
+
+          <div class="control-row">
+            <label for="custom-img-quality">
+              <span>Compression Quality</span>
+              <span id="custom-img-quality-val">75%</span>
+            </label>
+            <input type="range" id="custom-img-quality" min="1" max="100" value="75">
+          </div>
+
+          <div class="control-row">
+            <label for="custom-img-res">Max Bounding Box</label>
+            <select id="custom-img-res">
+              <option value="original">Original Dimensions</option>
+              <option value="1080p" selected>1080p (Max 1920 × 1080)</option>
+              <option value="720p">720p (Max 1280 × 720)</option>
+              <option value="480p">480p (Max 854 × 480)</option>
+            </select>
+          </div>
+
+          <div class="preset-specs" style="margin-top: 1.5rem;">
+            <div class="spec-item">ℹ️ Embedded document images strictly enforce JPEG/PNG for backward compatibility.</div>
+            <div class="spec-item">ℹ️ Embedded doc videos always transcode to AVC + AAC in MP4 container.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Drag & Drop Zone -->
+    <section>
+      <div id="dropzone" class="dropzone-container">
+        <div class="dropzone-icon">📁</div>
+        <h3 class="dropzone-heading">Drop Files or Folders Here</h3>
+        <p class="dropzone-subtext">or click to browse from your computer</p>
+
+        <div class="supported-formats-pills">
+          <span class="format-pill">Word (.docx, .doc)</span>
+          <span class="format-pill">PowerPoint (.pptx, .ppt)</span>
+          <span class="format-pill">Excel (.xlsx, .xls)</span>
+          <span class="format-pill">PDF (.pdf)</span>
+          <span class="format-pill">Videos (.mp4, .mov, .avi, .mkv, .webm)</span>
+          <span class="format-pill">Images (.jpg, .png, .webp, .tiff, .bmp, .gif)</span>
+        </div>
+
+        <input type="file" id="file-input" multiple class="hidden" accept=".docx,.doc,.pptx,.ppt,.xlsx,.xls,.pdf,.mp4,.mov,.avi,.mkv,.webm,.wmv,.jpg,.jpeg,.png,.webp,.bmp,.tif,.tiff,.gif,.avif">
+      </div>
+    </section>
+
+    <!-- Batch Queue Section (Shown when files are added) -->
+    <section id="queue-container" class="queue-card hidden">
+      <div class="queue-header-bar">
+        <div class="queue-stats-group">
+          <div class="stat-item">
+            <span class="stat-label">Batch Progress</span>
+            <div class="global-progress-track">
+              <div id="global-progress-bar" class="global-progress-fill"></div>
+            </div>
+          </div>
+
+          <div class="stat-item">
+            <span class="stat-label">Status</span>
+            <span id="global-status-text" class="stat-value">0/0 completed</span>
+          </div>
+
+          <div class="stat-item">
+            <span class="stat-label">Space Savings</span>
+            <span id="total-saved-badge" class="stat-value" style="color: var(--accent-success);">Saved: 0 B</span>
+          </div>
+        </div>
+
+        <div class="queue-btn-group">
+          <button id="btn-start-batch" class="btn btn-primary">⚡ Start Compression</button>
+          <button id="btn-download-all" class="btn btn-secondary" disabled>📦 Download All (ZIP)</button>
+          <button id="btn-clear-queue" class="btn btn-secondary">✕ Clear</button>
+        </div>
+      </div>
+
+      <div class="table-responsive">
+        <table class="queue-table">
+          <thead>
+            <tr>
+              <th>File Name</th>
+              <th>Type</th>
+              <th>Original Size</th>
+              <th>Compressed Size</th>
+              <th>Space Saved</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="queue-tbody">
+            <!-- Dynamic rows generated by app.js -->
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Interactive Comparison Modal -->
+  <div id="compare-modal" class="modal-overlay hidden" role="dialog" aria-modal="true">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h4 id="modal-title" class="brand-title">Visual Comparison</h4>
+        <button id="modal-close" class="btn btn-icon" aria-label="Close modal">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="compare-grid">
+          <!-- Original Panel -->
+          <div class="compare-card">
+            <div class="compare-label">
+              <span>Original File</span>
+              <span id="modal-orig-meta">0 B</span>
+            </div>
+            <div id="modal-orig-preview" class="preview-container">
+              <!-- Rendered original media -->
+            </div>
+          </div>
+
+          <!-- Compressed Panel -->
+          <div class="compare-card">
+            <div class="compare-label">
+              <span>Compressed Output</span>
+              <span id="modal-comp-meta" style="color: var(--accent-success);">0 B</span>
+            </div>
+            <div id="modal-comp-preview" class="preview-container">
+              <!-- Rendered compressed media -->
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>
