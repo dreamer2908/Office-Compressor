@@ -135,7 +135,7 @@
     if (['jpg', 'jpeg', 'png', 'webp', 'bmp', 'tif', 'tiff', 'gif', 'avif'].includes(ext)) {
       return { category: 'image', ext, icon: '🖼️', label: ext.toUpperCase() };
     }
-    if (['mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv'].includes(ext)) {
+    if (['mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'mts', 'm2ts', 'ts'].includes(ext)) {
       return { category: 'video', ext, icon: '🎬', label: ext.toUpperCase() };
     }
     return { category: 'unknown', ext, icon: '📦', label: ext.toUpperCase() };
@@ -608,7 +608,8 @@
         item.phase = 'Transcoding Video';
         updateRow(item);
 
-        const res = await window.VideoProcessor.compressVideo(item.file, options.videoOptions, (prog) => {
+        const videoOpts = { ...options.videoOptions, filename: item.name };
+        const res = await window.VideoProcessor.compressVideo(item.file, videoOpts, (prog) => {
           item.progress = prog.progress || 50;
           item.phase = `Encoding (${item.progress}%)`;
           updateRow(item);

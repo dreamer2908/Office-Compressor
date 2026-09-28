@@ -89,6 +89,15 @@
         'https://cdn.jsdelivr.net/npm/webm-muxer@5.0.2/build/webm-muxer.min.js',
         'https://cdn.jsdelivr.net/npm/webm-muxer/build/webm-muxer.js'
       ]
+    },
+    {
+      id: 'decode-ac3',
+      name: 'liba52 AC-3 Decoder (Dolby Digital Audio)',
+      global: 'DecodeAC3',
+      sources: [
+        './libs/decode-ac3.min.js',
+        'https://cdn.jsdelivr.net/npm/@audio/decode-ac3@1.0.0/decode-ac3.js'
+      ]
     }
   ];
 

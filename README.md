@@ -28,8 +28,8 @@ An enterprise-grade, 100% client-side static web application designed as a web-n
 | [`app.js`](file:///d:/Code/Office-Compressor/Office-Compressor/app.js) | Main UI controller, preset mapping, dynamic codec detection (`VideoEncoder.isConfigSupported()`), and batch queue |
 | [`doc-processor.js`](file:///d:/Code/Office-Compressor/Office-Compressor/doc-processor.js) | Office ZIP (`JSZip`), legacy XLS (`SheetJS`), legacy OLE2 (`CFB`), and PDF (`pdf-lib`) media replacement engine |
 | [`image-worker.js`](file:///d:/Code/Office-Compressor/Office-Compressor/image-worker.js) | Image pipeline supporting native formats, TIFF (`UTIF.js`), Auto screenshot vs photo heuristic, and OffscreenCanvas |
-| [`video-worker.js`](file:///d:/Code/Office-Compressor/Office-Compressor/video-worker.js) | WebCodecs demuxer/encoder pipeline (MP4, MKV/WebM, AVI H.264), dynamic bitrate formulas, and MP4/MKV muxing |
-| [`libs/`](file:///d:/Code/Office-Compressor/Office-Compressor/libs) | Bundled third-party libraries for offline operation (`jszip`, `xlsx`, `cfb`, `pdf-lib`, `utif`, `mp4box`, `mp4-muxer`, `webm-muxer`) |
+| [`video-worker.js`](file:///d:/Code/Office-Compressor/Office-Compressor/video-worker.js) | WebCodecs demuxer/encoder pipeline (MP4, MKV/WebM, AVI H.264, MTS/M2TS Blu-ray AVCHD), liba52 AC-3 audio demux/decode to AAC, dynamic bitrate formulas, and MP4/MKV muxing |
+| [`libs/`](file:///d:/Code/Office-Compressor/Office-Compressor/libs) | Bundled third-party libraries for offline operation (`jszip`, `xlsx`, `cfb`, `pdf-lib`, `utif`, `mp4box`, `mp4-muxer`, `webm-muxer`, `decode-ac3`) |
 | [`server.js`](file:///d:/Code/Office-Compressor/Office-Compressor/server.js) | Lightweight static development server for local testing |
 
 ---
@@ -53,7 +53,12 @@ An enterprise-grade, 100% client-side static web application designed as a web-n
      - High color variance / gradients / photo noise $\rightarrow$ Lossy WebP or JPEG.
 
 ### 3. Video Pipeline (WebCodecs)
-- **Demuxing:** `MP4Box.js` for MP4/MOV, RIFF parser for AVI (AVC stream), EBML parser for MKV/WebM, and universal HTML5 `<video>` extraction fallback.
+- **Demuxing:**
+  - `MP4Box.js` for MP4/MOV.
+  - RIFF parser for AVI (H.264 stream).
+  - Pure-JS BDAV / MPEG-TS demuxer for standalone **MTS / M2TS Blu-ray videos** (from Sony HDR camcorders): handles 192-byte and 188-byte packets, PAT/PMT extraction, PES video reassembly, SPS aspect ratio / profile parsing, dynamic `avcC` configuration, AC-3 audio PES reassembly, and deinterlaced scaling to email-friendly MP4.
+  - **AC-3 Audio Transcoding Engine (`liba52` WASM):** Decodes raw Dolby Digital AC-3 stream (`PID 0x1100`, ATSC A/52) via embedded `liba52` WebAssembly, downmixes multi-channel/5.1 surround to high-fidelity stereo Float32Array PCM, and encodes into AAC (`mp4a.40.2`) via WebCodecs `AudioEncoder` with accurate PTS offset synchronization.
+  - EBML parser for MKV/WebM, and universal HTML5 `<video>` extraction fallback.
 - **Dynamic Bitrate Formula:**
   $$\text{bitrate (bps)} = \text{Math.round}(\text{width} \times \text{height} \times \text{fps} \times \text{qualityFactor})$$
   - `'low'`: `0.05` (Email Strict)

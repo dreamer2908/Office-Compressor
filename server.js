@@ -23,11 +23,25 @@ const MIME_TYPES = {
   '.avi': 'video/x-msvideo',
   '.mp4': 'video/mp4',
   '.mkv': 'video/x-matroska',
-  '.webm': 'video/webm'
+  '.webm': 'video/webm',
+  '.mts': 'video/mp2t',
+  '.m2ts': 'video/mp2t'
 };
 
 const server = http.createServer((req, res) => {
   let reqPath = decodeURI(req.url.split('?')[0]);
+
+  if (reqPath === '/api/test-log' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      console.log('[BROWSER TEST LOG]', body);
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    return;
+  }
+
   if (reqPath === '/' || reqPath === '') reqPath = '/index.html';
 
   let filePath = path.join(BASE_DIR, reqPath);
