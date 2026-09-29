@@ -62,8 +62,8 @@ const server = http.createServer((req, res) => {
 
   let filePath = path.join(BASE_DIR, reqPath);
 
-  // Fallback to sample directory if requested
-  if (reqPath.startsWith('/samples/')) {
+  // Fallback to sample or tests directory if requested
+  if (reqPath.startsWith('/samples/') || reqPath.startsWith('/tests/')) {
     filePath = path.join(BASE_DIR, '..', reqPath);
   }
 

@@ -98,8 +98,34 @@
         './libs/decode-ac3.min.js',
         'https://cdn.jsdelivr.net/npm/@audio/decode-ac3@1.0.0/decode-ac3.js'
       ]
+    },
+    {
+      id: 'aac-encoder',
+      name: 'FFmpeg libavcodec AAC Encoder (Audio Fallback)',
+      global: 'AacEncoderWasm',
+      sources: [
+        './libs/aac-enc.min.js',
+        'https://cdn.jsdelivr.net/npm/@mediabunny/aac-encoder@1.60.0/dist/modules/build/aac.js'
+      ]
     }
   ];
+
+  function getBaseLibsUrl() {
+    try {
+      const loaderScript = typeof document !== 'undefined' ? (document.currentScript || document.querySelector('script[src*="loader.js"]')) : null;
+      if (loaderScript && loaderScript.src) {
+        return new URL('libs/', loaderScript.src).href;
+      }
+    } catch (e) {}
+    return './libs/';
+  }
+
+  function resolveSourceUrl(src) {
+    if (src.startsWith('./libs/')) {
+      return getBaseLibsUrl() + src.slice('./libs/'.length);
+    }
+    return src;
+  }
 
   class DependencyLoaderManager {
     constructor() {
@@ -166,8 +192,9 @@
       }
 
       for (let i = 0; i < dep.sources.length; i++) {
-        const url = dep.sources[i];
-        const isLocal = url.startsWith('./');
+        const rawUrl = dep.sources[i];
+        const url = resolveSourceUrl(rawUrl);
+        const isLocal = rawUrl.startsWith('./');
         try {
           // Local files load very fast, give 2500ms timeout; CDNs get 4500ms
           const timeout = isLocal ? 2500 : 4500;

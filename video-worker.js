@@ -63,6 +63,29 @@
   }
 
   /**
+   * Ensures that AVC/H.264 codec string level matches or exceeds the required resolution level.
+   * Prevents Chromium VideoEncoder NotSupportedError (e.g. 720p/1080p exceeding level 3.0 0x1E).
+   */
+  function ensureValidAvcCodec(codecStr, width, height) {
+    if (!codecStr || !codecStr.startsWith('avc1.')) return codecStr;
+    const pixels = width * height;
+    const profile = codecStr.slice(5, 9);
+    let levelHex = codecStr.slice(9, 11).toUpperCase();
+    let levelVal = parseInt(levelHex, 16) || 30;
+
+    let minLevel = 30; // Level 3.0 (480p)
+    if (pixels > 921600) minLevel = 40; // Level 4.0 (1080p, 0x28)
+    else if (pixels > 414720) minLevel = 31; // Level 3.1 (720p, 0x1F)
+
+    if (levelVal < minLevel) {
+      levelVal = minLevel;
+      levelHex = levelVal.toString(16).toUpperCase().padStart(2, '0');
+      return `avc1.${profile}${levelHex}`;
+    }
+    return codecStr;
+  }
+
+  /**
    * Dynamic bitrate formula:
    * bitrate = Math.round(width * height * fps * qualityFactor)
    * Or target file size formula:
@@ -851,6 +874,127 @@
     return new Uint8Array([byte0, byte1]);
   }
 
+  let _cachedAacModule = null;
+  async function getAacEncoderModule() {
+    if (_cachedAacModule) return _cachedAacModule;
+    let factory = globalScope.AacEncoderWasm || (typeof window !== 'undefined' ? window.AacEncoderWasm : null);
+    if (!factory && typeof window !== 'undefined' && window.DependencyLoader) {
+      try {
+        await window.DependencyLoader.load('aac-encoder');
+      } catch (e) {
+        console.warn('[VideoProcessor] DependencyLoader failed to load aac-encoder:', e);
+      }
+      factory = globalScope.AacEncoderWasm || window.AacEncoderWasm;
+    }
+    if (!factory) {
+      throw new Error('AacEncoderWasm module is not available');
+    }
+    _cachedAacModule = await factory();
+    return _cachedAacModule;
+  }
+
+  /**
+   * Encodes stereo Float32Array PCM audio using the bundled FFmpeg libavcodec AAC WASM encoder.
+   * Produces compliant raw AAC access units with AudioSpecificConfig metadata and feeds them
+   * directly to the active Mp4Muxer or WebMMuxer.
+   */
+  async function encodeAudioWithWasmAac({
+    stereoChannels,
+    sampleRate = 48000,
+    bitrate = 64000,
+    startSample = 0,
+    totalSamples = null,
+    muxer,
+    finalContainer = 'mp4',
+    onProgress = null
+  }) {
+    const mod = await getAacEncoderModule();
+    const initEncoderFn = mod.cwrap('init_encoder', 'number', ['number', 'number', 'number']);
+    const getEncoderFrameSize = mod.cwrap('get_encoder_frame_size', 'number', ['number']);
+    const getEncoderExtradata = mod.cwrap('get_encoder_extradata', 'number', ['number']);
+    const getEncoderExtradataSize = mod.cwrap('get_encoder_extradata_size', 'number', ['number']);
+    const getEncodeInputPtr = mod.cwrap('get_encode_input_ptr', 'number', ['number', 'number']);
+    const sendFrameFn = mod.cwrap('send_frame', 'number', ['number', 'number']);
+    const receivePacketFn = mod.cwrap('receive_packet', 'number', ['number']);
+    const flushEncoderStartFn = mod.cwrap('flush_encoder_start', null, ['number']);
+    const getEncodedData = mod.cwrap('get_encoded_data', 'number', ['number']);
+    const getEncodedDuration = mod.cwrap('get_encoded_duration', 'number', ['number']);
+    const closeEncoderFn = mod.cwrap('close_encoder', null, ['number']);
+
+    const channels = 2;
+    const ctx = initEncoderFn(channels, sampleRate, bitrate);
+    if (!ctx) throw new Error('Failed to initialize WASM AAC encoder (ctx is 0)');
+
+    try {
+      const frameSize = getEncoderFrameSize(ctx); // 1024
+      const extradataPtr = getEncoderExtradata(ctx);
+      const extradataSize = getEncoderExtradataSize(ctx);
+      const extradata = mod.HEAPU8.slice(extradataPtr, extradataPtr + extradataSize);
+
+      const [leftCh, rightCh] = stereoChannels;
+      const endSample = totalSamples !== null ? Math.min(leftCh.length, totalSamples) : leftCh.length;
+
+      const inputFloat32 = new Float32Array(frameSize * channels);
+      const inputBytes = new Uint8Array(inputFloat32.buffer);
+
+      let packetCount = 0;
+      const meta = {
+        decoderConfig: {
+          codec: 'mp4a.40.2',
+          sampleRate: sampleRate,
+          numberOfChannels: channels,
+          description: extradata
+        }
+      };
+
+      const drainPackets = () => {
+        let size;
+        while ((size = receivePacketFn(ctx)) > 0) {
+          const ptr = getEncodedData(ctx);
+          const data = new Uint8Array(mod.HEAPU8.slice(ptr, ptr + size));
+          const dur = getEncodedDuration(ctx) || frameSize;
+          const timestampUs = Math.max(0, Math.round(((packetCount * frameSize) / sampleRate) * 1e6));
+          const durationUs = Math.round((dur / sampleRate) * 1e6);
+
+          if (finalContainer === 'mkv') {
+            muxer.addAudioChunkRaw(data, 'key', timestampUs, meta);
+          } else {
+            muxer.addAudioChunkRaw(data, 'key', timestampUs, durationUs, meta);
+          }
+          packetCount++;
+        }
+      };
+
+      let frameIndex = 0;
+      for (let s = startSample; s < endSample; s += frameSize) {
+        const count = Math.min(frameSize, endSample - s);
+        for (let i = 0; i < count; i++) {
+          inputFloat32[i * 2] = leftCh[s + i];
+          inputFloat32[i * 2 + 1] = rightCh[s + i];
+        }
+        for (let i = count; i < frameSize; i++) {
+          inputFloat32[i * 2] = 0;
+          inputFloat32[i * 2 + 1] = 0;
+        }
+
+        const inputPtr = getEncodeInputPtr(ctx, inputBytes.length);
+        mod.HEAPU8.set(inputBytes, inputPtr);
+
+        const ret = sendFrameFn(ctx, BigInt(frameIndex * frameSize));
+        if (ret < 0) {
+          throw new Error('send_frame failed with code ' + ret);
+        }
+        drainPackets();
+        frameIndex++;
+      }
+
+      flushEncoderStartFn(ctx);
+      drainPackets();
+    } finally {
+      closeEncoderFn(ctx);
+    }
+  }
+
   /**
    * Maps a standard WebCodecs video codec string (e.g., avc1.640028, vp09.00.10.08)
    * to the appropriate container-level codec identifier for Mp4Muxer or WebMMuxer.
@@ -883,8 +1027,8 @@
     }
 
     const {
-      targetResolution = '720p',
-      targetFps = 15,
+      targetResolution = (options.resolution || '720p'),
+      targetFps = (options.fps || 15),
       rateControl = 'qualityFactor',
       qualityFactor = 'good',
       exactBitrate = 1500,
@@ -897,7 +1041,6 @@
     } = options;
 
     const finalContainer = isEmbeddedDoc ? 'mp4' : (container === 'mkv' ? 'mkv' : 'mp4');
-    const finalCodec = isEmbeddedDoc ? 'avc1.4D401F' : (codec || 'avc1.4D401F');
     const finalAudioMode = isEmbeddedDoc ? 'aac' : audioMode;
 
     const origW = parsed.displayWidth || 1920;
@@ -905,6 +1048,7 @@
     const targetDim = calculateVideoDimensions(origW, origH, targetResolution);
     const outW = targetDim.width;
     const outH = targetDim.height;
+    const finalCodec = ensureValidAvcCodec(isEmbeddedDoc ? 'avc1.4D401F' : (codec || 'avc1.4D401F'), outW, outH);
 
     let effectiveFps = 15;
     if (typeof targetFps === 'number') effectiveFps = targetFps;
@@ -953,34 +1097,53 @@
     let effectiveAudioCodec = 'aac';
     let audioConfigCodec = 'mp4a.40.2';
     const audioSampleRate = (decodedAudio && decodedAudio.sampleRate) || 48000;
+    const requestedAudioBitrateNum = Number(audioBitrate) || 64000;
+    let effectiveAudioBitrate = requestedAudioBitrateNum;
+    let useWasmAac = false;
 
     if (hasAudio) {
       if (finalAudioMode === 'opus') {
+        const targetOpusBitrate = Math.max(32000, Math.min(256000, requestedAudioBitrateNum || 128000));
         try {
           const supOpus = await AudioEncoder.isConfigSupported({
             codec: 'opus',
             sampleRate: 48000,
             numberOfChannels: 2,
-            bitrate: audioBitrate
+            bitrate: targetOpusBitrate
           });
           if (supOpus && supOpus.supported) {
             effectiveAudioCodec = 'opus';
             audioConfigCodec = 'opus';
+            effectiveAudioBitrate = targetOpusBitrate;
           }
         } catch (e) {}
       } else {
-        try {
-          const supAac = await AudioEncoder.isConfigSupported({
-            codec: 'mp4a.40.2',
-            sampleRate: audioSampleRate,
-            numberOfChannels: 2,
-            bitrate: audioBitrate
-          });
-          if (supAac && supAac.supported) {
-            effectiveAudioCodec = 'aac';
-            audioConfigCodec = 'mp4a.40.2';
+        effectiveAudioCodec = 'aac';
+        effectiveAudioBitrate = requestedAudioBitrateNum;
+        let nativeSupported = false;
+        if (typeof AudioEncoder !== 'undefined') {
+          try {
+            const supAac = await AudioEncoder.isConfigSupported({
+              codec: 'mp4a.40.2',
+              sampleRate: audioSampleRate,
+              numberOfChannels: 2,
+              bitrate: requestedAudioBitrateNum
+            });
+            if (supAac && supAac.supported) {
+              nativeSupported = true;
+            }
+          } catch (e) {
+            nativeSupported = false;
           }
-        } catch (e) {}
+        }
+
+        if (nativeSupported) {
+          audioConfigCodec = 'mp4a.40.2';
+          useWasmAac = false;
+        } else {
+          console.log(`[VideoProcessor] Native AAC AudioEncoder does not support ${requestedAudioBitrateNum} bps. Falling back to bundled 3rd-party WASM AAC encoder.`);
+          useWasmAac = true;
+        }
       }
     }
 
@@ -1032,7 +1195,7 @@
     let audioEncoder = null;
     let audioEncoderError = null;
 
-    if (hasAudio) {
+    if (hasAudio && !useWasmAac && typeof AudioEncoder !== 'undefined') {
       const aacDesc = getAacAudioSpecificConfig(audioSampleRate, 2);
       try {
         audioEncoder = new AudioEncoder({
@@ -1055,11 +1218,14 @@
           codec: audioConfigCodec,
           sampleRate: audioSampleRate,
           numberOfChannels: 2,
-          bitrate: audioBitrate
+          bitrate: effectiveAudioBitrate
         });
       } catch (aeErr) {
-        console.warn('[MTS] AudioEncoder configure failed, fallback to video-only:', aeErr);
+        console.warn('[MTS] AudioEncoder configure failed, fallback to WASM AAC encoder:', aeErr);
         audioEncoder = null;
+        if (effectiveAudioCodec === 'aac') {
+          useWasmAac = true;
+        }
       }
     }
 
@@ -1160,43 +1326,68 @@
     encoder.close();
 
     // Encode audio if available
-    if (audioEncoder && stereoChannels) {
-      if (onProgress) onProgress({ phase: 'encoding-audio', progress: 90 });
+    if (hasAudio && stereoChannels) {
       const [leftCh, rightCh] = stereoChannels;
       const sampleRate = audioSampleRate;
       const totalSamples = leftCh.length;
-      const CHUNK_SIZE = 1024;
       let startSample = 0;
 
       if (parsed.audioOffsetUs < 0) {
         startSample = Math.min(totalSamples, Math.round((-parsed.audioOffsetUs * sampleRate) / 1000000));
       }
 
-      for (let s = startSample; s < totalSamples; s += CHUNK_SIZE) {
-        if (audioEncoderError) throw audioEncoderError;
-        const numFrames = Math.min(CHUNK_SIZE, totalSamples - s);
-        const planar = new Float32Array(numFrames * 2);
-        planar.set(leftCh.subarray(s, s + numFrames), 0);
-        planar.set(rightCh.subarray(s, s + numFrames), numFrames);
+      if (useWasmAac) {
+        if (onProgress) onProgress({ phase: 'encoding-audio', progress: 90 });
+        try {
+          await encodeAudioWithWasmAac({
+            stereoChannels,
+            sampleRate: audioSampleRate,
+            bitrate: effectiveAudioBitrate,
+            startSample,
+            muxer,
+            finalContainer,
+            onProgress
+          });
+        } catch (wasmErr) {
+          console.warn('[VideoProcessor] MTS WASM AAC encoding error:', wasmErr);
+        }
+      } else if (audioEncoder) {
+        if (onProgress) onProgress({ phase: 'encoding-audio', progress: 90 });
+        const CHUNK_SIZE = 1024;
 
-        const sampleOffset = s - startSample;
-        const timestampUs = Math.round((sampleOffset * 1000000) / sampleRate);
+        for (let s = startSample; s < totalSamples; s += CHUNK_SIZE) {
+          if (audioEncoderError) {
+            console.warn('[VideoProcessor] MTS audio encoding encountered error, continuing video without remaining audio:', audioEncoderError);
+            break;
+          }
+          const numFrames = Math.min(CHUNK_SIZE, totalSamples - s);
+          const planar = new Float32Array(numFrames * 2);
+          planar.set(leftCh.subarray(s, s + numFrames), 0);
+          planar.set(rightCh.subarray(s, s + numFrames), numFrames);
 
-        const aData = new AudioData({
-          format: 'f32-planar',
-          sampleRate: sampleRate,
-          numberOfChannels: 2,
-          numberOfFrames: numFrames,
-          timestamp: timestampUs,
-          data: planar
-        });
+          const sampleOffset = s - startSample;
+          const timestampUs = Math.round((sampleOffset * 1000000) / sampleRate);
 
-        audioEncoder.encode(aData);
-        aData.close();
+          const aData = new AudioData({
+            format: 'f32-planar',
+            sampleRate: sampleRate,
+            numberOfChannels: 2,
+            numberOfFrames: numFrames,
+            timestamp: timestampUs,
+            data: planar
+          });
+
+          audioEncoder.encode(aData);
+          aData.close();
+        }
+
+        try {
+          await audioEncoder.flush();
+        } catch (flushErr) {
+          console.warn('[VideoProcessor] MTS AudioEncoder flush error:', flushErr);
+        }
+        audioEncoder.close();
       }
-
-      await audioEncoder.flush();
-      audioEncoder.close();
     }
 
     muxer.finalize();
@@ -1221,8 +1412,8 @@
    */
   async function transcodeViaVideoElement(fileBlob, options, onProgress) {
     const {
-      targetResolution = '720p',
-      targetFps = 15,
+      targetResolution = (options.resolution || '720p'),
+      targetFps = (options.fps || 15),
       rateControl = 'qualityFactor',
       qualityFactor = 'good',
       exactBitrate = 1500,
@@ -1235,7 +1426,6 @@
     } = options;
 
     const finalContainer = isEmbeddedDoc ? 'mp4' : (container === 'mkv' ? 'mkv' : 'mp4');
-    const finalCodec = isEmbeddedDoc ? 'avc1.4D401F' : (codec || 'avc1.4D401F');
     const finalAudioMode = isEmbeddedDoc ? 'aac' : audioMode;
 
     const videoUrl = URL.createObjectURL(fileBlob);
@@ -1260,6 +1450,7 @@
       const targetDim = calculateVideoDimensions(origW, origH, targetResolution);
       const outW = targetDim.width;
       const outH = targetDim.height;
+      const finalCodec = ensureValidAvcCodec(isEmbeddedDoc ? 'avc1.4D401F' : (codec || 'avc1.4D401F'), outW, outH);
 
       // Effective FPS
       let effectiveFps = 15;
@@ -1325,34 +1516,53 @@
       // Determine Audio Codec (AAC or Opus)
       let effectiveAudioCodec = 'aac';
       let audioConfigCodec = 'mp4a.40.2';
+      const requestedAudioBitrateNum = Number(audioBitrate) || 64000;
+      let effectiveAudioBitrate = requestedAudioBitrateNum;
+      let useWasmAac = false;
 
       if (hasAudio) {
         if (finalAudioMode === 'opus') {
+          const targetOpusBitrate = Math.max(32000, Math.min(256000, requestedAudioBitrateNum || 96000));
           try {
             const supOpus = await AudioEncoder.isConfigSupported({
               codec: 'opus',
               sampleRate: 48000,
               numberOfChannels: 2,
-              bitrate: audioBitrate
+              bitrate: targetOpusBitrate
             });
             if (supOpus && supOpus.supported) {
               effectiveAudioCodec = 'opus';
               audioConfigCodec = 'opus';
+              effectiveAudioBitrate = targetOpusBitrate;
             }
           } catch (e) {}
         } else {
-          try {
-            const supAac = await AudioEncoder.isConfigSupported({
-              codec: 'mp4a.40.2',
-              sampleRate: audioSampleRate,
-              numberOfChannels: 2,
-              bitrate: audioBitrate
-            });
-            if (supAac && supAac.supported) {
-              effectiveAudioCodec = 'aac';
-              audioConfigCodec = 'mp4a.40.2';
+          effectiveAudioCodec = 'aac';
+          effectiveAudioBitrate = requestedAudioBitrateNum;
+          let nativeSupported = false;
+          if (typeof AudioEncoder !== 'undefined') {
+            try {
+              const supAac = await AudioEncoder.isConfigSupported({
+                codec: 'mp4a.40.2',
+                sampleRate: audioSampleRate,
+                numberOfChannels: 2,
+                bitrate: requestedAudioBitrateNum
+              });
+              if (supAac && supAac.supported) {
+                nativeSupported = true;
+              }
+            } catch (e) {
+              nativeSupported = false;
             }
-          } catch (e) {}
+          }
+
+          if (nativeSupported) {
+            audioConfigCodec = 'mp4a.40.2';
+            useWasmAac = false;
+          } else {
+            console.log(`[VideoProcessor] Native AAC AudioEncoder does not support ${requestedAudioBitrateNum} bps. Falling back to bundled 3rd-party WASM AAC encoder.`);
+            useWasmAac = true;
+          }
         }
       }
 
@@ -1404,7 +1614,7 @@
       let audioEncoder = null;
       let audioEncoderError = null;
 
-      if (hasAudio && typeof AudioEncoder !== 'undefined') {
+      if (hasAudio && !useWasmAac && typeof AudioEncoder !== 'undefined') {
         const aacDesc = getAacAudioSpecificConfig(audioSampleRate, 2);
         try {
           audioEncoder = new AudioEncoder({
@@ -1427,11 +1637,14 @@
             codec: audioConfigCodec,
             sampleRate: audioSampleRate,
             numberOfChannels: 2,
-            bitrate: audioBitrate
+            bitrate: effectiveAudioBitrate
           });
         } catch (aeErr) {
-          console.warn('[VideoProcessor] AudioEncoder configure failed, proceeding video-only:', aeErr);
+          console.warn('[VideoProcessor] AudioEncoder configure failed, fallback to WASM AAC encoder:', aeErr);
           audioEncoder = null;
+          if (effectiveAudioCodec === 'aac') {
+            useWasmAac = true;
+          }
         }
       }
 
@@ -1529,34 +1742,61 @@
       encoder.close();
 
       // Encode audio if available
-      if (audioEncoder && stereoChannels) {
-        if (onProgress) onProgress({ phase: 'encoding-audio', progress: 90 });
+      if (hasAudio && stereoChannels) {
         const [leftCh, rightCh] = stereoChannels;
         const totalSamples = Math.min(leftCh.length, Math.ceil(duration * audioSampleRate));
-        const CHUNK_SIZE = 1024;
-        for (let s = 0; s < totalSamples; s += CHUNK_SIZE) {
-          if (audioEncoderError) throw audioEncoderError;
-          const numFrames = Math.min(CHUNK_SIZE, totalSamples - s);
-          const planar = new Float32Array(numFrames * 2);
-          planar.set(leftCh.subarray(s, s + numFrames), 0);
-          planar.set(rightCh.subarray(s, s + numFrames), numFrames);
 
-          const timestampUs = Math.round((s * 1000000) / audioSampleRate);
+        if (useWasmAac) {
+          if (onProgress) onProgress({ phase: 'encoding-audio', progress: 90 });
+          try {
+            await encodeAudioWithWasmAac({
+              stereoChannels,
+              sampleRate: audioSampleRate,
+              bitrate: effectiveAudioBitrate,
+              startSample: 0,
+              totalSamples,
+              muxer,
+              finalContainer,
+              onProgress
+            });
+          } catch (wasmErr) {
+            console.warn('[VideoProcessor] WASM AAC encoding error:', wasmErr);
+          }
+        } else if (audioEncoder) {
+          if (onProgress) onProgress({ phase: 'encoding-audio', progress: 90 });
+          const CHUNK_SIZE = 1024;
+          for (let s = 0; s < totalSamples; s += CHUNK_SIZE) {
+            if (audioEncoderError) {
+              console.warn('[VideoProcessor] Audio encoding encountered error, continuing video without remaining audio:', audioEncoderError);
+              break;
+            }
+            const numFrames = Math.min(CHUNK_SIZE, totalSamples - s);
+            const planar = new Float32Array(numFrames * 2);
+            planar.set(leftCh.subarray(s, s + numFrames), 0);
+            planar.set(rightCh.subarray(s, s + numFrames), numFrames);
 
-          const aData = new AudioData({
-            format: 'f32-planar',
-            sampleRate: audioSampleRate,
-            numberOfChannels: 2,
-            numberOfFrames: numFrames,
-            timestamp: timestampUs,
-            data: planar
-          });
+            const timestampUs = Math.round((s * 1000000) / audioSampleRate);
 
-          audioEncoder.encode(aData);
-          aData.close();
+            const aData = new AudioData({
+              format: 'f32-planar',
+              sampleRate: audioSampleRate,
+              numberOfChannels: 2,
+              numberOfFrames: numFrames,
+              timestamp: timestampUs,
+              data: planar
+            });
+
+            audioEncoder.encode(aData);
+            aData.close();
+          }
+
+          try {
+            await audioEncoder.flush();
+          } catch (flushErr) {
+            console.warn('[VideoProcessor] AudioEncoder flush error:', flushErr);
+          }
+          audioEncoder.close();
         }
-        await audioEncoder.flush();
-        audioEncoder.close();
       }
 
       // Finalize Muxer
