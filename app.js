@@ -340,20 +340,50 @@
     return allEntries;
   }
 
-  // Recursive Directory / Folder Drop Traversal
+  // Modern File System Access API recursive handle reader (supports file:/// and HTTP/S)
+  async function readFileSystemHandle(handle) {
+    if (!handle) return [];
+    if (handle.kind === 'file') {
+      try {
+        const file = await handle.getFile();
+        return file ? [file] : [];
+      } catch (e) {
+        return [];
+      }
+    } else if (handle.kind === 'directory') {
+      const files = [];
+      try {
+        for await (const entry of handle.values()) {
+          const subFiles = await readFileSystemHandle(entry);
+          files.push(...subFiles);
+        }
+      } catch (e) {}
+      return files;
+    }
+    return [];
+  }
+
+  // Recursive Directory / Folder Drop Traversal (Legacy webkitGetAsEntry fallback)
   async function traverseFileTree(item) {
     if (!item) return [];
     if (item.isFile) {
       return new Promise((resolve) => {
-        item.file((file) => resolve([file]), () => resolve([]));
+        item.file(
+          (file) => resolve([file]),
+          () => resolve([])
+        );
       });
     } else if (item.isDirectory) {
-      const dirReader = item.createReader();
-      const entries = await readAllDirectoryEntries(dirReader);
-      const nestedFiles = await Promise.all(
-        entries.map((childEntry) => traverseFileTree(childEntry))
-      );
-      return nestedFiles.flat();
+      try {
+        const dirReader = item.createReader();
+        const entries = await readAllDirectoryEntries(dirReader);
+        const nestedFiles = await Promise.all(
+          entries.map((childEntry) => traverseFileTree(childEntry))
+        );
+        return nestedFiles.flat();
+      } catch (e) {
+        return [];
+      }
     }
     return [];
   }
@@ -365,33 +395,68 @@
 
     // CRITICAL: Synchronously extract all entries/files before any async/await
     // In Chromium/WebKit, e.dataTransfer is emptied/protected across microtask yields!
-    const entries = [];
     const directFiles = [];
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      directFiles.push(...Array.from(e.dataTransfer.files));
+    }
+
+    const handlePromises = [];
+    const webkitEntries = [];
 
     if (e.dataTransfer.items && e.dataTransfer.items.length > 0) {
       for (let i = 0; i < e.dataTransfer.items.length; i++) {
         const item = e.dataTransfer.items[i];
         if (item.kind === 'file') {
-          if (typeof item.webkitGetAsEntry === 'function') {
-            const entry = item.webkitGetAsEntry();
-            if (entry) {
-              entries.push(entry);
-              continue;
-            }
+          // Direct File extraction (works reliably on file:/// and HTTP/S)
+          const f = item.getAsFile ? item.getAsFile() : null;
+          if (f && !directFiles.some((df) => df.name === f.name && df.size === f.size)) {
+            directFiles.push(f);
           }
-          const file = item.getAsFile ? item.getAsFile() : null;
-          if (file) directFiles.push(file);
+          // File System Access API (modern standard: directory traversal on file:/// and HTTP/S)
+          if (typeof item.getAsFileSystemHandle === 'function') {
+            try {
+              const hp = item.getAsFileSystemHandle();
+              if (hp) handlePromises.push(hp);
+            } catch (err) {}
+          }
+          // webkitGetAsEntry (legacy fallback for older browsers)
+          if (typeof item.webkitGetAsEntry === 'function') {
+            try {
+              const entry = item.webkitGetAsEntry();
+              if (entry) webkitEntries.push(entry);
+            } catch (err) {}
+          }
         }
       }
-    } else if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      directFiles.push(...Array.from(e.dataTransfer.files));
     }
 
     let collectedFiles = [];
-    if (entries.length > 0) {
-      const results = await Promise.all(entries.map((entry) => traverseFileTree(entry)));
-      collectedFiles = results.flat().filter(Boolean);
-    } else {
+
+    // Strategy 1: Modern File System Access API handles (supports directories on file:/// and HTTP/S)
+    if (handlePromises.length > 0) {
+      try {
+        const handles = (await Promise.all(handlePromises)).filter(Boolean);
+        if (handles.length > 0) {
+          const handleResults = await Promise.all(handles.map((h) => readFileSystemHandle(h)));
+          collectedFiles = handleResults.flat().filter(Boolean);
+        }
+      } catch (err) {
+        console.warn('[Drop] FileSystemHandle processing warning:', err);
+      }
+    }
+
+    // Strategy 2: Legacy webkitGetAsEntry (for browsers without FileSystemHandle)
+    if (collectedFiles.length === 0 && webkitEntries.length > 0) {
+      try {
+        const entryResults = await Promise.all(webkitEntries.map((entry) => traverseFileTree(entry)));
+        collectedFiles = entryResults.flat().filter(Boolean);
+      } catch (err) {
+        console.warn('[Drop] webkitGetAsEntry processing warning:', err);
+      }
+    }
+
+    // Strategy 3: Direct File objects fallback (guaranteed on file:/// and standard file drops)
+    if (collectedFiles.length === 0 && directFiles.length > 0) {
       collectedFiles = directFiles;
     }
 
@@ -836,17 +901,38 @@
     });
 
     // Prevent default window file dropping navigation
-    window.addEventListener('dragover', (e) => e.preventDefault());
+    window.addEventListener('dragenter', (e) => e.preventDefault());
+    window.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      if (e.dataTransfer && DOM.dropzone && !DOM.dropzone.contains(e.target)) {
+        e.dataTransfer.dropEffect = 'none';
+      }
+    });
     window.addEventListener('drop', (e) => e.preventDefault());
 
     // Dropzone drag-and-drop
-    DOM.dropzone.addEventListener('dragover', (e) => {
+    DOM.dropzone.addEventListener('dragenter', (e) => {
       e.preventDefault();
+      e.stopPropagation();
+      if (e.dataTransfer) {
+        e.dataTransfer.dropEffect = 'copy';
+      }
       DOM.dropzone.classList.add('drag-over');
     });
 
-    DOM.dropzone.addEventListener('dragleave', () => {
-      DOM.dropzone.classList.remove('drag-over');
+    DOM.dropzone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.dataTransfer) {
+        e.dataTransfer.dropEffect = 'copy';
+      }
+      DOM.dropzone.classList.add('drag-over');
+    });
+
+    DOM.dropzone.addEventListener('dragleave', (e) => {
+      if (!DOM.dropzone.contains(e.relatedTarget)) {
+        DOM.dropzone.classList.remove('drag-over');
+      }
     });
 
     DOM.dropzone.addEventListener('drop', handleDropEvent);

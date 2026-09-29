@@ -371,6 +371,10 @@ body {
   overflow: hidden;
 }
 
+.dropzone-container * {
+  pointer-events: none;
+}
+
 .dropzone-container:hover {
   border-color: var(--accent-primary);
   background: var(--bg-surface-elevated);
