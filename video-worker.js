@@ -921,7 +921,7 @@
     const getEncodedDuration = mod.cwrap('get_encoded_duration', 'number', ['number']);
     const closeEncoderFn = mod.cwrap('close_encoder', null, ['number']);
 
-    const channels = 2;
+    const channels = numberOfChannels || (stereoChannels.length === 1 ? 1 : 2);
     const ctx = initEncoderFn(channels, sampleRate, bitrate);
     if (!ctx) throw new Error('Failed to initialize WASM AAC encoder (ctx is 0)');
 
@@ -931,7 +931,8 @@
       const extradataSize = getEncoderExtradataSize(ctx);
       const extradata = mod.HEAPU8.slice(extradataPtr, extradataPtr + extradataSize);
 
-      const [leftCh, rightCh] = stereoChannels;
+      const leftCh = stereoChannels[0];
+      const rightCh = channels > 1 ? (stereoChannels[1] || leftCh) : null;
       const endSample = totalSamples !== null ? Math.min(leftCh.length, totalSamples) : leftCh.length;
 
       const inputFloat32 = new Float32Array(frameSize * channels);
@@ -968,13 +969,22 @@
       let frameIndex = 0;
       for (let s = startSample; s < endSample; s += frameSize) {
         const count = Math.min(frameSize, endSample - s);
-        for (let i = 0; i < count; i++) {
-          inputFloat32[i * 2] = leftCh[s + i];
-          inputFloat32[i * 2 + 1] = rightCh[s + i];
-        }
-        for (let i = count; i < frameSize; i++) {
-          inputFloat32[i * 2] = 0;
-          inputFloat32[i * 2 + 1] = 0;
+        if (channels === 1) {
+          for (let i = 0; i < count; i++) {
+            inputFloat32[i] = leftCh[s + i];
+          }
+          for (let i = count; i < frameSize; i++) {
+            inputFloat32[i] = 0;
+          }
+        } else {
+          for (let i = 0; i < count; i++) {
+            inputFloat32[i * 2] = leftCh[s + i];
+            inputFloat32[i * 2 + 1] = rightCh[s + i];
+          }
+          for (let i = count; i < frameSize; i++) {
+            inputFloat32[i * 2] = 0;
+            inputFloat32[i * 2 + 1] = 0;
+          }
         }
 
         const inputPtr = getEncodeInputPtr(ctx, inputBytes.length);

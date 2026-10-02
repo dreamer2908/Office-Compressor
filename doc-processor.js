@@ -16,6 +16,7 @@
 
   const IMAGE_EXT_REGEX = /\.(jpe?g|png|bmp|tiff?|gif)$/i;
   const VIDEO_EXT_REGEX = /\.(mp4|avi|mov|wmv|mkv|webm)$/i;
+  const AUDIO_EXT_REGEX = /\.(m4a|aac|mp3|wav|ogg|oga|flac|wma)$/i;
 
   /**
    * Process Modern Office formats (.docx, .pptx, .xlsx)
@@ -34,6 +35,8 @@
           mediaEntries.push({ path: relativePath, type: 'image', file });
         } else if (relativePath.match(VIDEO_EXT_REGEX)) {
           mediaEntries.push({ path: relativePath, type: 'video', file });
+        } else if (relativePath.match(AUDIO_EXT_REGEX)) {
+          mediaEntries.push({ path: relativePath, type: 'audio', file });
         }
       }
     });
@@ -97,6 +100,36 @@
           }
         } catch (e) {
           console.warn(`[DocProcessor] Skipping uncompressible video ${item.path}:`, e);
+        }
+      } else if (item.type === 'audio') {
+        try {
+          if (globalScope.AudioProcessor && globalScope.AudioProcessor.compressAudio) {
+            const audioOpts = {
+              audioMode: 'aac',
+              audioBitrate: options.audioOptions?.audioBitrate || (options.videoOptions?.audioBitrate) || 64000,
+              audioChannels: options.audioOptions?.audioChannels || (options.videoOptions?.audioChannels) || 'mono',
+              container: 'm4a',
+              filename: item.path,
+              isEmbeddedDoc: true
+            };
+            const result = await globalScope.AudioProcessor.compressAudio(origBuffer, audioOpts, (audioProg) => {
+              if (onProgress && totalMedia > 0) {
+                const basePct = (processedCount / totalMedia) * 80;
+                const subPct = ((audioProg.progress || 0) / 100) * (80 / totalMedia);
+                onProgress({
+                  phase: `Compressing audio ${item.path}`,
+                  progress: Math.min(85, Math.round(basePct + subPct))
+                });
+              }
+            });
+
+            if (result.buffer && result.buffer.byteLength < origBuffer.byteLength) {
+              zip.file(item.path, result.buffer);
+              console.log(`[DocProcessor] Compressed embedded audio ${item.path}: ${origBuffer.byteLength} -> ${result.buffer.byteLength} bytes`);
+            }
+          }
+        } catch (e) {
+          console.warn(`[DocProcessor] Skipping uncompressible audio ${item.path}:`, e);
         }
       }
 

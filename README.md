@@ -29,7 +29,7 @@ An enterprise-grade, 100% client-side static web application designed as a web-n
 | [`doc-processor.js`](file:///d:/Code/Office-Compressor/Office-Compressor/doc-processor.js) | Office ZIP (`JSZip`), legacy XLS (`SheetJS`), legacy OLE2 (`CFB`), and PDF (`pdf-lib`) media replacement engine |
 | [`image-worker.js`](file:///d:/Code/Office-Compressor/Office-Compressor/image-worker.js) | Image pipeline supporting native formats, TIFF (`UTIF.js`), Auto screenshot vs photo heuristic, and OffscreenCanvas |
 | [`video-worker.js`](file:///d:/Code/Office-Compressor/Office-Compressor/video-worker.js) | WebCodecs demuxer/encoder pipeline (MP4, MKV/WebM, AVI H.264, MTS/M2TS Blu-ray AVCHD), liba52 AC-3 audio demux/decode to AAC, dynamic bitrate formulas, and MP4/MKV muxing |
-| [`libs/`](file:///d:/Code/Office-Compressor/Office-Compressor/libs) | Bundled third-party libraries for offline operation (`jszip`, `xlsx`, `cfb`, `pdf-lib`, `utif`, `mp4box`, `mp4-muxer`, `webm-muxer`, `decode-ac3`) |
+| [`libs/`](file:///d:/Code/Office-Compressor/Office-Compressor/libs) | Bundled third-party libraries for offline operation (`jszip`, `xlsx`, `cfb`, `pdf-lib`, `utif`, `mp4box`, `mp4-muxer`, `webm-muxer`, `decode-ac3`, `aac-enc`) |
 | [`server.js`](file:///d:/Code/Office-Compressor/Office-Compressor/server.js) | Lightweight static development server for local testing |
 
 ---

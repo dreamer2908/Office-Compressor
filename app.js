@@ -17,6 +17,11 @@
     'email-strict': {
       name: 'Email Strict (< 10 MB)',
       description: 'Maximum compression for strict email server limits (Exchange/Outlook 10MB cap)',
+      audio: {
+        mode: 'aac',
+        bitrate: 64000,
+        channels: 'stereo'
+      },
       video: {
         resolution: '480p',
         fps: 15,
@@ -25,6 +30,7 @@
         codec: 'avc1.42E01E',
         audioMode: 'aac',
         audioBitrate: 64000,
+        audioChannels: 'stereo',
         container: 'mp4'
       },
       image: {
@@ -39,6 +45,11 @@
     'email-standard': {
       name: 'Email Standard (< 25 MB)',
       description: 'Balanced high compression for standard email attachments (Gmail, Outlook 25MB cap)',
+      audio: {
+        mode: 'aac',
+        bitrate: 96000,
+        channels: 'stereo'
+      },
       video: {
         resolution: '720p',
         fps: 15,
@@ -47,6 +58,7 @@
         codec: 'avc1.4D401F',
         audioMode: 'aac',
         audioBitrate: 96000,
+        audioChannels: 'stereo',
         container: 'mp4'
       },
       image: {
@@ -61,6 +73,11 @@
     'screen-presentation': {
       name: 'Screen Presentation',
       description: 'Optimized for high-fidelity 1080p screen viewing, slides, and crisp UI screenshots',
+      audio: {
+        mode: 'aac',
+        bitrate: 128000,
+        channels: 'original'
+      },
       video: {
         resolution: '1080p',
         fps: 'original',
@@ -69,6 +86,7 @@
         codec: 'avc1.4D401F',
         audioMode: 'passthrough',
         audioBitrate: 128000,
+        audioChannels: 'original',
         container: 'mp4'
       },
       image: {
@@ -138,6 +156,9 @@
     if (['mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'mts', 'm2ts', 'ts'].includes(ext)) {
       return { category: 'video', ext, icon: '🎬', label: ext.toUpperCase() };
     }
+    if (['m4a', 'mp3', 'wav', 'aac', 'ogg', 'oga', 'flac', 'opus', 'wma'].includes(ext)) {
+      return { category: 'audio', ext, icon: '🎵', label: ext.toUpperCase() };
+    }
     return { category: 'unknown', ext, icon: '📦', label: ext.toUpperCase() };
   }
 
@@ -171,6 +192,7 @@
     DOM.customTargetSize = document.getElementById('custom-target-size');
     DOM.customAudioMode = document.getElementById('custom-audio-mode');
     DOM.customAudioBitrate = document.getElementById('custom-audio-bitrate');
+    DOM.customAudioChannels = document.getElementById('custom-audio-channels');
     DOM.customContainer = document.getElementById('custom-container');
 
     DOM.customImgFormat = document.getElementById('custom-img-format');
@@ -240,15 +262,25 @@
   function getEffectiveOptions() {
     if (state.currentPreset !== 'custom') {
       const preset = PRESETS[state.currentPreset];
+      const audioMode = preset.audio ? preset.audio.mode : preset.video.audioMode;
+      const audioBitrate = preset.audio ? preset.audio.bitrate : preset.video.audioBitrate;
+      const audioChannels = preset.audio ? preset.audio.channels : (preset.video.audioChannels || 'stereo');
+
       return {
+        audioOptions: {
+          audioMode,
+          audioBitrate,
+          audioChannels
+        },
         videoOptions: {
           targetResolution: preset.video.resolution,
           targetFps: preset.video.fps,
           rateControl: preset.video.rateControl,
           qualityFactor: preset.video.qualityFactor,
           codec: preset.video.codec,
-          audioMode: preset.video.audioMode,
-          audioBitrate: preset.video.audioBitrate,
+          audioMode,
+          audioBitrate,
+          audioChannels,
           container: preset.video.container
         },
         imageOptions: {
@@ -262,7 +294,16 @@
 
     // Custom mode values
     const rateControl = DOM.customRateControl.value;
+    const audioMode = DOM.customAudioMode.value;
+    const audioBitrate = Number(DOM.customAudioBitrate.value);
+    const audioChannels = DOM.customAudioChannels ? DOM.customAudioChannels.value : 'stereo';
+
     return {
+      audioOptions: {
+        audioMode,
+        audioBitrate,
+        audioChannels
+      },
       videoOptions: {
         targetResolution: DOM.customVideoRes.value,
         targetFps: DOM.customVideoFps.value === 'original' ? 'original' : Number(DOM.customVideoFps.value),
@@ -271,8 +312,9 @@
         exactBitrate: Number(DOM.customExactBitrate.value),
         targetSizeBytes: Number(DOM.customTargetSize.value) * 1024 * 1024,
         codec: DOM.codecSelect.value || 'avc1.4D401F',
-        audioMode: DOM.customAudioMode.value,
-        audioBitrate: Number(DOM.customAudioBitrate.value),
+        audioMode,
+        audioBitrate,
+        audioChannels,
         container: DOM.customContainer.value
       },
       imageOptions: {
@@ -685,6 +727,26 @@
         item.resultBlob = new Blob([res.buffer], { type: res.mime });
         item.compressedSize = res.buffer.byteLength;
         item.resultUrl = createManagedUrl(item.resultBlob);
+      } else if (item.typeInfo.category === 'audio') {
+        item.phase = 'Compressing Audio';
+        updateRow(item);
+
+        const audioOpts = {
+          ...options.audioOptions,
+          filename: item.name,
+          mime: item.file.type
+        };
+        const res = await window.AudioProcessor.compressAudio(item.file, audioOpts, (prog) => {
+          item.progress = prog.progress || 50;
+          item.phase = `${prog.phase || 'Encoding'} (${item.progress}%)`;
+          updateRow(item);
+        });
+
+        const newExt = res.container === 'webm' ? 'webm' : 'm4a';
+        item.finalName = item.name.replace(/\.[^.]+$/, `.${newExt}`);
+        item.resultBlob = res.blob || new Blob([res.buffer], { type: res.mime });
+        item.compressedSize = res.buffer.byteLength;
+        item.resultUrl = createManagedUrl(item.resultBlob);
       } else if (item.typeInfo.category === 'document') {
         item.phase = 'Processing Document Media';
         updateRow(item);
@@ -855,6 +917,9 @@
     } else if (item.typeInfo.category === 'video') {
       DOM.modalOrigPreview.innerHTML = `<video src="${origUrl}" controls muted playsinline class="preview-media"></video>`;
       DOM.modalCompPreview.innerHTML = `<video src="${compUrl}" controls playsinline class="preview-media"></video>`;
+    } else if (item.typeInfo.category === 'audio') {
+      DOM.modalOrigPreview.innerHTML = `<audio src="${origUrl}" controls class="preview-media" style="width: 100%; margin-top: 1rem;"></audio>`;
+      DOM.modalCompPreview.innerHTML = `<audio src="${compUrl}" controls class="preview-media" style="width: 100%; margin-top: 1rem;"></audio>`;
     }
 
     DOM.compareModal.classList.remove('hidden');

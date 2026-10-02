@@ -15,6 +15,7 @@
   <!-- Compression Engines -->
   <script src="image-worker.js"></script>
   <script src="video-worker.js"></script>
+  <script src="audio-processor.js"></script>
   <script src="doc-processor.js"></script>
 
   <!-- Application UI Controller -->
@@ -69,6 +70,7 @@
           <p class="preset-desc">Maximum reduction for strict enterprise mailboxes (Exchange / Outlook limits).</p>
           <div class="preset-specs">
             <div class="spec-item"><span>🎬</span> Video: 480p @ 15fps, Low Bitrate (0.05), AAC 64k</div>
+            <div class="spec-item"><span>🎵</span> Audio: AAC 64k Stereo</div>
             <div class="spec-item"><span>🖼️</span> Images/Docs: 720p Max, Q: 60</div>
           </div>
         </div>
@@ -83,6 +85,7 @@
           <p class="preset-desc">Recommended balance of quality and size for standard email attachments (Gmail / Outlook).</p>
           <div class="preset-specs">
             <div class="spec-item"><span>🎬</span> Video: 720p @ 15fps, Good Bitrate (0.08), AAC 96k</div>
+            <div class="spec-item"><span>🎵</span> Audio: AAC 96k Stereo</div>
             <div class="spec-item"><span>🖼️</span> Images/Docs: 1080p Max, Q: 75</div>
           </div>
         </div>
@@ -97,6 +100,7 @@
           <p class="preset-desc">Crisp visuals for slide decks, projector displays, and UI screenshots.</p>
           <div class="preset-specs">
             <div class="spec-item"><span>🎬</span> Video: 1080p @ Original fps, High Bitrate (0.10)</div>
+            <div class="spec-item"><span>🎵</span> Audio: AAC 128k Original</div>
             <div class="spec-item"><span>🖼️</span> Images/Docs: 1080p Max, Q: 85 (PNG for charts)</div>
           </div>
         </div>
@@ -203,6 +207,15 @@
           </div>
 
           <div class="control-row">
+            <label for="custom-audio-channels">Audio Channel</label>
+            <select id="custom-audio-channels">
+              <option value="original">Original</option>
+              <option value="stereo" selected>Stereo (2 Channels)</option>
+              <option value="mono">Mono (1 Channel)</option>
+            </select>
+          </div>
+
+          <div class="control-row">
             <label for="custom-container">Output Container</label>
             <select id="custom-container">
               <option value="mp4" selected>MP4 Container (.mp4)</option>
@@ -264,10 +277,11 @@
           <span class="format-pill">Excel (.xlsx, .xls)</span>
           <span class="format-pill">PDF (.pdf)</span>
           <span class="format-pill">Videos (.mp4, .mov, .avi, .mkv, .webm, .mts, .m2ts)</span>
+          <span class="format-pill">Audios (.m4a, .mp3, .wav, .aac, .ogg, .flac)</span>
           <span class="format-pill">Images (.jpg, .png, .webp, .tiff, .bmp, .gif)</span>
         </div>
 
-        <input type="file" id="file-input" multiple class="hidden" accept=".docx,.doc,.pptx,.ppt,.xlsx,.xls,.pdf,.mp4,.mov,.avi,.mkv,.webm,.wmv,.mts,.m2ts,.ts,.jpg,.jpeg,.png,.webp,.bmp,.tif,.tiff,.gif,.avif">
+        <input type="file" id="file-input" multiple class="hidden" accept=".docx,.doc,.pptx,.ppt,.xlsx,.xls,.pdf,.mp4,.mov,.avi,.mkv,.webm,.wmv,.mts,.m2ts,.ts,.m4a,.mp3,.wav,.aac,.ogg,.oga,.flac,.opus,.wma,.jpg,.jpeg,.png,.webp,.bmp,.tif,.tiff,.gif,.avif">
       </div>
     </section>
 
