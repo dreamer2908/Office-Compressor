@@ -9,13 +9,10 @@
 
   <!-- Resilient Dependency Bootstrap Loader (Loads local ./libs/*.js with automatic CDN fallback) -->
   <script src="loader.js"></script>
-  <script src="libs/decode-ac3.min.js"></script>
-  <script src="libs/aac-enc.min.js"></script>
 
   <!-- Compression Engines -->
   <script src="image-worker.js"></script>
-  <script src="video-worker.js"></script>
-  <script src="audio-processor.js"></script>
+  <script src="media-worker.js"></script>
   <script src="doc-processor.js"></script>
 
   <!-- Application UI Controller -->
@@ -35,7 +32,7 @@
       </div>
 
       <div class="header-actions">
-        <span id="dep-status-pill" class="dep-pill dep-ok" title="All compression dependencies loaded">9/9 Libs Ready</span>
+        <span id="dep-status-pill" class="dep-pill dep-ok" title="All compression dependencies loaded">8/8 Libs Ready</span>
         <button id="theme-toggle" class="btn btn-secondary btn-sm" aria-label="Toggle theme">☀️ Light</button>
       </div>
     </div>
@@ -198,7 +195,9 @@
           <div class="control-row">
             <label for="custom-audio-bitrate">Audio Bitrate</label>
             <select id="custom-audio-bitrate">
-              <option value="64000">64 kbps (Voice / Low)</option>
+              <option value="32000">32 kbps (Ultra Low)</option>
+              <option value="48000">48 kbps (Voice / Low)</option>
+              <option value="64000">64 kbps (Modest)</option>
               <option value="96000" selected>96 kbps (Standard)</option>
               <option value="128000">128 kbps (High Fidelity)</option>
               <option value="160000">160 kbps (Studio)</option>
@@ -209,7 +208,7 @@
           <div class="control-row">
             <label for="custom-audio-channels">Audio Channel</label>
             <select id="custom-audio-channels">
-              <option value="original">Original</option>
+              <option value="original">Keep Original</option>
               <option value="stereo" selected>Stereo (2 Channels)</option>
               <option value="mono">Mono (1 Channel)</option>
             </select>
@@ -281,7 +280,7 @@
           <span class="format-pill">Images (.jpg, .png, .webp, .tiff, .bmp, .gif)</span>
         </div>
 
-        <input type="file" id="file-input" multiple class="hidden" accept=".docx,.doc,.pptx,.ppt,.xlsx,.xls,.pdf,.mp4,.mov,.avi,.mkv,.webm,.wmv,.mts,.m2ts,.ts,.m4a,.mp3,.wav,.aac,.ogg,.oga,.flac,.opus,.wma,.jpg,.jpeg,.png,.webp,.bmp,.tif,.tiff,.gif,.avif">
+        <input type="file" id="file-input" multiple class="hidden" accept=".docx,.xlsx,.pptx,.pdf,.doc,.xls,.ppt,.jpg,.jpeg,.png,.webp,.gif,.bmp,.avif,.tiff,.mp4,.mov,.mkv,.webm,.avi,.wmv,.mts,.m2ts,.flv,.wav,.mp3,.m4a,.wma,.flac,.aac,.ogg">
       </div>
     </section>
 

@@ -77,11 +77,13 @@
       } else if (item.type === 'video') {
         try {
           // Recompress video with STRICT embedded rules: AVC + AAC MP4 only!
-          const result = await globalScope.VideoProcessor.compressVideo(origBuffer, {
+          const processor = globalScope.MediaProcessor || globalScope.VideoProcessor;
+          const result = await processor.compressMedia(origBuffer, {
             ...options.videoOptions,
             container: 'mp4',
             codec: 'avc1.4D401F',
             audioMode: 'aac',
+            filename: item.path,
             isEmbeddedDoc: true
           }, (videoProg) => {
             if (onProgress && totalMedia > 0) {
@@ -95,16 +97,46 @@
           });
 
           if (result.buffer && result.buffer.byteLength < origBuffer.byteLength) {
-            zip.file(item.path, result.buffer);
+            const oldPath = item.path;
+            const newPath = item.path.replace(/\.[^.]+$/, '.mp4');
+            zip.remove(oldPath);
+            zip.file(newPath, result.buffer);
             console.log(`[DocProcessor] Compressed embedded video ${item.path}: ${origBuffer.byteLength} -> ${result.buffer.byteLength} bytes`);
+
+            if (oldPath !== newPath) {
+              const oldFileName = oldPath.split('/').pop();
+              const newFileName = newPath.split('/').pop();
+
+              const relsEntries = [];
+              zip.forEach((p, f) => {
+                if (p.endsWith('.rels')) relsEntries.push({ path: p, file: f });
+              });
+              for (const rel of relsEntries) {
+                const text = await rel.file.async('string');
+                if (text.includes(oldFileName)) {
+                  zip.file(rel.path, text.split(oldFileName).join(newFileName));
+                }
+              }
+
+              const ctFile = zip.file('[Content_Types].xml');
+              if (ctFile) {
+                let ctXml = await ctFile.async('string');
+                if (!ctXml.includes('Extension="mp4"') && !ctXml.includes('extension="mp4"')) {
+                  ctXml = ctXml.replace('</Types>', '<Default Extension="mp4" ContentType="video/mp4"/></Types>');
+                  zip.file('[Content_Types].xml', ctXml);
+                }
+              }
+            }
           }
         } catch (e) {
           console.warn(`[DocProcessor] Skipping uncompressible video ${item.path}:`, e);
         }
       } else if (item.type === 'audio') {
         try {
-          if (globalScope.AudioProcessor && globalScope.AudioProcessor.compressAudio) {
+          const processor = globalScope.MediaProcessor || globalScope.AudioProcessor;
+          if (processor && (processor.compressMedia || processor.compressAudio)) {
             const audioOpts = {
+              mode: 'audio-only',
               audioMode: 'aac',
               audioBitrate: options.audioOptions?.audioBitrate || (options.videoOptions?.audioBitrate) || 64000,
               audioChannels: options.audioOptions?.audioChannels || (options.videoOptions?.audioChannels) || 'mono',
@@ -112,7 +144,8 @@
               filename: item.path,
               isEmbeddedDoc: true
             };
-            const result = await globalScope.AudioProcessor.compressAudio(origBuffer, audioOpts, (audioProg) => {
+            const compressFn = processor.compressMedia || processor.compressAudio;
+            const result = await compressFn(origBuffer, audioOpts, (audioProg) => {
               if (onProgress && totalMedia > 0) {
                 const basePct = (processedCount / totalMedia) * 80;
                 const subPct = ((audioProg.progress || 0) / 100) * (80 / totalMedia);
@@ -124,8 +157,38 @@
             });
 
             if (result.buffer && result.buffer.byteLength < origBuffer.byteLength) {
-              zip.file(item.path, result.buffer);
+              const oldPath = item.path;
+              const newPath = item.path.replace(/\.[^.]+$/, '.m4a');
+              zip.remove(oldPath);
+              zip.file(newPath, result.buffer);
               console.log(`[DocProcessor] Compressed embedded audio ${item.path}: ${origBuffer.byteLength} -> ${result.buffer.byteLength} bytes`);
+
+              if (oldPath !== newPath) {
+                const oldFileName = oldPath.split('/').pop();
+                const newFileName = newPath.split('/').pop();
+
+                // Update relationships in all .rels files
+                const relsEntries = [];
+                zip.forEach((p, f) => {
+                  if (p.endsWith('.rels')) relsEntries.push({ path: p, file: f });
+                });
+                for (const rel of relsEntries) {
+                  const text = await rel.file.async('string');
+                  if (text.includes(oldFileName)) {
+                    zip.file(rel.path, text.split(oldFileName).join(newFileName));
+                  }
+                }
+
+                // Ensure [Content_Types].xml has m4a mapping
+                const ctFile = zip.file('[Content_Types].xml');
+                if (ctFile) {
+                  let ctXml = await ctFile.async('string');
+                  if (!ctXml.includes('Extension="m4a"') && !ctXml.includes('extension="m4a"')) {
+                    ctXml = ctXml.replace('</Types>', '<Default Extension="m4a" ContentType="audio/mp4"/></Types>');
+                    zip.file('[Content_Types].xml', ctXml);
+                  }
+                }
+              }
             }
           }
         } catch (e) {

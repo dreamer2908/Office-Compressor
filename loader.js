@@ -62,15 +62,6 @@
       ]
     },
     {
-      id: 'mp4box',
-      name: 'MP4Box.js (MP4/MOV Demuxer)',
-      global: 'MP4Box',
-      sources: [
-        './libs/mp4box.all.min.js',
-        'https://cdn.jsdelivr.net/npm/mp4box@0.5.2/dist/mp4box.all.min.js'
-      ]
-    },
-    {
       id: 'mp4-muxer',
       name: 'MP4 Muxer (WebCodecs MP4 Output)',
       global: 'Mp4Muxer',
@@ -91,21 +82,12 @@
       ]
     },
     {
-      id: 'decode-ac3',
-      name: 'liba52 AC-3 Decoder (Dolby Digital Audio)',
-      global: 'DecodeAC3',
+      id: 'libav',
+      name: 'libav.js (Custom WebAssembly Audio/Video Engine)',
+      global: 'LibAV',
       sources: [
-        './libs/decode-ac3.min.js',
-        'https://cdn.jsdelivr.net/npm/@audio/decode-ac3@1.0.0/decode-ac3.js'
-      ]
-    },
-    {
-      id: 'aac-encoder',
-      name: 'FFmpeg libavcodec AAC Encoder (Audio Fallback)',
-      global: 'AacEncoderWasm',
-      sources: [
-        './libs/aac-enc.min.js',
-        'https://cdn.jsdelivr.net/npm/@mediabunny/aac-encoder@1.60.0/dist/modules/build/aac.js'
+        './libs/libav-6.10.9.0-webcodecs-custom.js',
+        'https://cdn.jsdelivr.net/npm/@libav.js/variant-webcodecs@6.10.9/dist/libav-webcodecs.min.js'
       ]
     }
   ];

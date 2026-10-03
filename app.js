@@ -76,7 +76,7 @@
       audio: {
         mode: 'aac',
         bitrate: 128000,
-        channels: 'original'
+        channels: 'stereo'
       },
       video: {
         resolution: '1080p',
@@ -153,7 +153,7 @@
     if (['jpg', 'jpeg', 'png', 'webp', 'bmp', 'tif', 'tiff', 'gif', 'avif'].includes(ext)) {
       return { category: 'image', ext, icon: '🖼️', label: ext.toUpperCase() };
     }
-    if (['mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'mts', 'm2ts', 'ts'].includes(ext)) {
+    if (['mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'mts', 'm2ts', 'ts', 'flv'].includes(ext)) {
       return { category: 'video', ext, icon: '🎬', label: ext.toUpperCase() };
     }
     if (['m4a', 'mp3', 'wav', 'aac', 'ogg', 'oga', 'flac', 'opus', 'wma'].includes(ext)) {
@@ -222,8 +222,9 @@
 
   // Dynamic Hardware Codec Detection
   async function detectCodecs() {
-    if (window.VideoProcessor && window.VideoProcessor.testSupportedCodecs) {
-      state.supportedCodecs = await window.VideoProcessor.testSupportedCodecs();
+    const processor = window.MediaProcessor || window.VideoProcessor;
+    if (processor && processor.testSupportedCodecs) {
+      state.supportedCodecs = await processor.testSupportedCodecs();
       if (DOM.codecSelect) {
         DOM.codecSelect.innerHTML = '';
         if (state.supportedCodecs.length === 0) {
@@ -716,16 +717,17 @@
         updateRow(item);
 
         const videoOpts = { ...options.videoOptions, filename: item.name };
-        const res = await window.VideoProcessor.compressVideo(item.file, videoOpts, (prog) => {
+        const processor = window.MediaProcessor || window.VideoProcessor;
+        const res = await processor.compressMedia(item.file, videoOpts, (prog) => {
           item.progress = prog.progress || 50;
-          item.phase = `Encoding (${item.progress}%)`;
+          item.phase = `${prog.phase || 'Encoding'} (${item.progress}%)`;
           updateRow(item);
         });
 
         const newExt = res.container === 'mp4' ? 'mp4' : 'mkv';
         item.finalName = item.name.replace(/\.[^.]+$/, `.${newExt}`);
-        item.resultBlob = new Blob([res.buffer], { type: res.mime });
-        item.compressedSize = res.buffer.byteLength;
+        item.resultBlob = res.blob || new Blob([res.buffer], { type: res.mime });
+        item.compressedSize = res.buffer ? res.buffer.byteLength : res.blob.size;
         item.resultUrl = createManagedUrl(item.resultBlob);
       } else if (item.typeInfo.category === 'audio') {
         item.phase = 'Compressing Audio';
@@ -733,19 +735,21 @@
 
         const audioOpts = {
           ...options.audioOptions,
+          mode: 'audio-only',
           filename: item.name,
           mime: item.file.type
         };
-        const res = await window.AudioProcessor.compressAudio(item.file, audioOpts, (prog) => {
+        const processor = window.MediaProcessor || window.AudioProcessor;
+        const res = await processor.compressMedia(item.file, audioOpts, (prog) => {
           item.progress = prog.progress || 50;
           item.phase = `${prog.phase || 'Encoding'} (${item.progress}%)`;
           updateRow(item);
         });
 
-        const newExt = res.container === 'webm' ? 'webm' : 'm4a';
+        const newExt = res.container === 'm4a' ? 'm4a' : (res.container || 'm4a');
         item.finalName = item.name.replace(/\.[^.]+$/, `.${newExt}`);
         item.resultBlob = res.blob || new Blob([res.buffer], { type: res.mime });
-        item.compressedSize = res.buffer.byteLength;
+        item.compressedSize = res.buffer ? res.buffer.byteLength : res.blob.size;
         item.resultUrl = createManagedUrl(item.resultBlob);
       } else if (item.typeInfo.category === 'document') {
         item.phase = 'Processing Document Media';
