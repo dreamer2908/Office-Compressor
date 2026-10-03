@@ -204,6 +204,115 @@
     return Math.max(200000, Math.min(20000000, calculated));
   }
 
+  function detectSourceFramerate(vStream, videoPackets, libav, hasValidPts, hasValidDts) {
+    let structAvgFps = 0;
+    let structRFps = 0;
+
+    if (vStream && vStream.ptr && libav && libav.HEAP32) {
+      try {
+        const r_num = libav.HEAP32[(vStream.ptr + 76) >> 2];
+        const r_den = libav.HEAP32[(vStream.ptr + 80) >> 2];
+        const avg_num = libav.HEAP32[(vStream.ptr + 172) >> 2];
+        const avg_den = libav.HEAP32[(vStream.ptr + 176) >> 2];
+        if (avg_den > 0 && avg_num > 0) {
+          const val = avg_num / avg_den;
+          if (val >= 1 && val <= 120) structAvgFps = val;
+        }
+        if (r_den > 0 && r_num > 0) {
+          const val = r_num / r_den;
+          if (val >= 1 && val <= 120) structRFps = val;
+        }
+      } catch (e) {}
+    }
+
+    if (vStream && vStream.framerate_num && vStream.framerate_den && vStream.framerate_den > 0) {
+      const val = vStream.framerate_num / vStream.framerate_den;
+      if (val >= 1 && val <= 120 && !structRFps) structRFps = val;
+    }
+    if (vStream && vStream.avg_frame_rate_num && vStream.avg_frame_rate_den && vStream.avg_frame_rate_den > 0) {
+      const val = vStream.avg_frame_rate_num / vStream.avg_frame_rate_den;
+      if (val >= 1 && val <= 120 && !structAvgFps) structAvgFps = val;
+    }
+
+    let packetAvgFps = 0;
+    let medianDeltaFps = 0;
+
+    if (videoPackets && videoPackets.length > 1) {
+      const tbNum = vStream.time_base_num || 1;
+      const tbDen = vStream.time_base_den || 1000;
+
+      const pFirst = videoPackets[0];
+      const pLast = videoPackets[videoPackets.length - 1];
+      const tsFirst = (hasValidPts && pFirst.pts !== undefined && pFirst.pts !== null) ? pFirst.pts
+        : (hasValidDts && pFirst.dts !== undefined && pFirst.dts !== null) ? pFirst.dts : 0;
+      const tsLast = (hasValidPts && pLast.pts !== undefined && pLast.pts !== null) ? pLast.pts
+        : (hasValidDts && pLast.dts !== undefined && pLast.dts !== null) ? pLast.dts : 0;
+
+      let durSec = (tsLast - tsFirst) * tbNum / tbDen;
+      if ((durSec <= 0 || isNaN(durSec)) && vStream.duration > 0) {
+        durSec = vStream.duration;
+      }
+
+      if (durSec > 0) {
+        const calc = videoPackets.length / durSec;
+        if (calc >= 1 && calc <= 120) packetAvgFps = calc;
+      }
+
+      const deltas = [];
+      const limit = Math.min(60, videoPackets.length);
+      for (let k = 1; k < limit; k++) {
+        const prev = videoPackets[k - 1];
+        const curr = videoPackets[k];
+        const prevTs = (hasValidPts && prev.pts !== undefined && prev.pts !== null) ? prev.pts : prev.dts;
+        const currTs = (hasValidPts && curr.pts !== undefined && curr.pts !== null) ? curr.pts : curr.dts;
+        if (currTs !== undefined && prevTs !== undefined && currTs > prevTs) {
+          const dSec = (currTs - prevTs) * tbNum / tbDen;
+          if (dSec >= 0.005 && dSec <= 2.0) deltas.push(dSec);
+        }
+      }
+      if (deltas.length > 0) {
+        deltas.sort((a, b) => a - b);
+        const medDelta = deltas[Math.floor(deltas.length / 2)];
+        if (medDelta > 0) {
+          const calc = 1 / medDelta;
+          if (calc >= 1 && calc <= 120) medianDeltaFps = calc;
+        }
+      }
+    }
+
+    let timebaseFps = 0;
+    if (vStream && vStream.time_base_num && vStream.time_base_den && vStream.time_base_den > 0) {
+      const calc = vStream.time_base_den / vStream.time_base_num;
+      if (calc >= 1 && calc <= 120) timebaseFps = calc;
+    }
+
+    let finalSourceFps = 30;
+    if (structAvgFps >= 1 && structAvgFps <= 120) {
+      finalSourceFps = structAvgFps;
+    } else if (structRFps >= 1 && structRFps <= 120) {
+      finalSourceFps = structRFps;
+    } else if (medianDeltaFps >= 1 && medianDeltaFps <= 120) {
+      finalSourceFps = medianDeltaFps;
+    } else if (packetAvgFps >= 1 && packetAvgFps <= 120) {
+      finalSourceFps = packetAvgFps;
+    } else if (timebaseFps >= 1 && timebaseFps <= 120) {
+      finalSourceFps = timebaseFps;
+    }
+
+    if (packetAvgFps >= 1 && packetAvgFps <= 120 && packetAvgFps < finalSourceFps * 0.85) {
+      finalSourceFps = packetAvgFps;
+    }
+
+    return {
+      sourceFps: finalSourceFps,
+      origFpsRounded: Math.max(1, Math.round(finalSourceFps)),
+      packetAvgFps,
+      structAvgFps,
+      structRFps,
+      medianDeltaFps
+    };
+  }
+
   async function testSupportedCodecs() {
     if (typeof VideoEncoder === 'undefined' || !VideoEncoder.isConfigSupported) {
       return [];
@@ -830,29 +939,6 @@
 
     const { width: outW, height: outH } = calculateVideoDimensions(displayW, codedH, options.targetResolution);
 
-    // Framerate & bitrate
-    let origFps = 30;
-    if (vStream.framerate_num && vStream.framerate_den && vStream.framerate_den > 0) {
-      origFps = Math.round(vStream.framerate_num / vStream.framerate_den);
-    } else if (vStream.time_base_num && vStream.time_base_den && vStream.time_base_den > 0) {
-      const calcFps = Math.round(vStream.time_base_den / vStream.time_base_num);
-      if (calcFps >= 1 && calcFps <= 120) origFps = calcFps;
-    }
-    if (origFps < 1 || origFps > 120) origFps = 30;
-
-    const targetFps = options.targetFps === 'original' || !options.targetFps ? origFps : Math.min(origFps, Number(options.targetFps));
-    const bitrate = calculateTargetBitrate({
-      width: outW,
-      height: outH,
-      fps: targetFps,
-      duration: options.duration || 1,
-      rateControl: options.rateControl || 'qualityFactor',
-      qualityFactor: options.qualityFactor || 'good',
-      exactBitrate: options.exactBitrate || 1500,
-      targetSizeBytes: options.targetSizeBytes || null,
-      audioBitrate: options.audioBitrate || 96000
-    });
-
     const isEmbedded = !!options.isEmbeddedDoc;
     const finalContainer = isEmbedded ? 'mp4' : (options.container === 'mkv' ? 'mkv' : 'mp4');
     const finalCodecStr = ensureValidAvcCodec(isEmbedded ? 'avc1.4D401F' : (options.codec || 'avc1.4D401F'), outW, outH);
@@ -860,7 +946,7 @@
     // Determine if hardware WebCodecs VideoDecoder can be used
     const isModernCodec = [CODEC_IDS.H264, CODEC_IDS.HEVC, CODEC_IDS.VP8, CODEC_IDS.VP9, CODEC_IDS.AV1].includes(vStream.codec_id);
 
-    // Demux all packets
+    // Demux all packets first for accurate stream analysis
     if (onProgress) onProgress({ progress: 15, phase: 'Demuxing streams' });
     const demuxPkt = await libav.av_packet_alloc();
     const videoPackets = [];
@@ -875,6 +961,72 @@
     await libav.av_packet_free_js(demuxPkt);
 
     if (videoPackets.length === 0) throw new Error('No video packets demuxed');
+
+    // Timestamp analysis (handles AVI or streams with missing/zero PTS)
+    let hasValidPts = false;
+    if (videoPackets.length > 1) {
+      for (let k = 1; k < Math.min(15, videoPackets.length); k++) {
+        if (videoPackets[k].pts !== undefined && videoPackets[k].pts !== null && videoPackets[k].pts > 0) {
+          hasValidPts = true;
+          break;
+        }
+      }
+    }
+    let hasValidDts = false;
+    if (!hasValidPts && videoPackets.length > 1) {
+      for (let k = 1; k < Math.min(15, videoPackets.length); k++) {
+        if (videoPackets[k].dts !== undefined && videoPackets[k].dts !== null && videoPackets[k].dts > 0) {
+          hasValidDts = true;
+          break;
+        }
+      }
+    }
+
+    // Accurate source framerate detection (CFR and average variable VFR)
+    const fpsInfo = detectSourceFramerate(vStream, videoPackets, libav, hasValidPts, hasValidDts);
+    const origFps = fpsInfo.origFpsRounded;
+    const sourceFps = fpsInfo.sourceFps;
+
+    // Target FPS determination:
+    // "In case where source fps (either constant fps or average variable fps) < target fps, keep the original fps."
+    let targetFps = origFps;
+    if (options.targetFps && options.targetFps !== 'original') {
+      const reqFps = Number(options.targetFps);
+      if (!isNaN(reqFps) && reqFps > 0) {
+        if (sourceFps < reqFps) {
+          targetFps = origFps;
+        } else {
+          targetFps = Math.min(origFps, reqFps);
+        }
+      }
+    }
+
+    // Accurate duration estimate
+    let streamDur = options.duration || vStream.duration || 1;
+    if (videoPackets.length > 1) {
+      const tbNum = vStream.time_base_num || 1;
+      const tbDen = vStream.time_base_den || 1000;
+      const pFirst = videoPackets[0];
+      const pLast = videoPackets[videoPackets.length - 1];
+      const tsFirst = (hasValidPts && pFirst.pts !== undefined && pFirst.pts !== null) ? pFirst.pts
+        : (hasValidDts && pFirst.dts !== undefined && pFirst.dts !== null) ? pFirst.dts : 0;
+      const tsLast = (hasValidPts && pLast.pts !== undefined && pLast.pts !== null) ? pLast.pts
+        : (hasValidDts && pLast.dts !== undefined && pLast.dts !== null) ? pLast.dts : 0;
+      const calcDur = (tsLast - tsFirst) * tbNum / tbDen;
+      if (calcDur > 0) streamDur = calcDur;
+    }
+
+    const bitrate = calculateTargetBitrate({
+      width: outW,
+      height: outH,
+      fps: targetFps,
+      duration: streamDur,
+      rateControl: options.rateControl || 'qualityFactor',
+      qualityFactor: options.qualityFactor || 'good',
+      exactBitrate: options.exactBitrate || 1500,
+      targetSizeBytes: options.targetSizeBytes || null,
+      audioBitrate: options.audioBitrate || 96000
+    });
 
     // Video Output Array
     const encodedVideoChunks = [];
@@ -914,19 +1066,27 @@
     const ctx = canvas.getContext('2d');
 
     const minIntervalUs = Math.round(1000000 / targetFps);
+    let firstPtsUs = null;
     let lastEncodedTimestampUs = -Infinity;
+    let lastEncodedPtsUs = -Infinity;
     let encodedFrameIndex = 0;
 
     function processAndEncodeFrame(frame) {
       const ptsUs = Math.round(frame.timestamp);
-      if (lastEncodedTimestampUs !== -Infinity && (ptsUs - lastEncodedTimestampUs) < (minIntervalUs * 0.75)) {
+      if (firstPtsUs === null) firstPtsUs = ptsUs;
+
+      if (lastEncodedPtsUs !== -Infinity && (ptsUs - lastEncodedPtsUs) < (minIntervalUs * 0.75)) {
         frame.close();
         return;
       }
       ctx.drawImage(frame, 0, 0, outW, outH);
       frame.close();
 
-      const outTimestampUs = Math.round(encodedFrameIndex * minIntervalUs);
+      let outTimestampUs = ptsUs - firstPtsUs;
+      if (outTimestampUs <= lastEncodedTimestampUs) {
+        outTimestampUs = lastEncodedTimestampUs + Math.round(minIntervalUs * 0.5);
+      }
+
       const scaledFrame = new VideoFrame(canvas, {
         timestamp: outTimestampUs,
         duration: minIntervalUs
@@ -935,7 +1095,8 @@
       videoEncoder.encode(scaledFrame, { keyFrame: isKey });
       scaledFrame.close();
 
-      lastEncodedTimestampUs = ptsUs;
+      lastEncodedPtsUs = ptsUs;
+      lastEncodedTimestampUs = outTimestampUs;
       encodedFrameIndex++;
     }
 
@@ -977,26 +1138,6 @@
             avccDesc = createAvcC(sps, pps);
             break;
           }
-        }
-      }
-    }
-
-    // Timestamp analysis (handles AVI or streams with missing/zero PTS)
-    let hasValidPts = false;
-    if (videoPackets.length > 1) {
-      for (let k = 1; k < Math.min(15, videoPackets.length); k++) {
-        if (videoPackets[k].pts !== undefined && videoPackets[k].pts !== null && videoPackets[k].pts > 0) {
-          hasValidPts = true;
-          break;
-        }
-      }
-    }
-    let hasValidDts = false;
-    if (!hasValidPts && videoPackets.length > 1) {
-      for (let k = 1; k < Math.min(15, videoPackets.length); k++) {
-        if (videoPackets[k].dts !== undefined && videoPackets[k].dts !== null && videoPackets[k].dts > 0) {
-          hasValidDts = true;
-          break;
         }
       }
     }
@@ -1338,6 +1479,7 @@
 
     if (onProgress) onProgress({ progress: 100, phase: 'Completed' });
 
+    const finalDur = lastEncodedTimestampUs > 0 ? (lastEncodedTimestampUs / 1000000) : (encodedFrameIndex / targetFps);
     return {
       buffer: outBytes.buffer,
       blob: new Blob([outBytes], { type: finalContainer === 'mp4' ? 'video/mp4' : 'video/x-matroska' }),
@@ -1345,7 +1487,7 @@
       width: outW,
       height: outH,
       fps: targetFps,
-      duration: encodedFrameIndex / targetFps,
+      duration: finalDur,
       container: finalContainer,
       codec: finalCodecStr
     };
