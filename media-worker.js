@@ -439,6 +439,52 @@
     return { data: out, isKey };
   }
 
+  function extractPackedI420(frame) {
+    if (!frame || !frame.data) return null;
+    const w = frame.width;
+    const h = frame.height;
+    if (!w || !h) return null;
+
+    if (Array.isArray(frame.data)) {
+      const yLen = w * h;
+      const uvLen = (w >> 1) * (h >> 1);
+      const buf = new Uint8Array(yLen + uvLen * 2);
+      buf.set(frame.data[0].subarray(0, yLen), 0);
+      buf.set(frame.data[1].subarray(0, uvLen), yLen);
+      buf.set(frame.data[2].subarray(0, uvLen), yLen + uvLen);
+      return buf;
+    }
+
+    if (frame.layout && frame.layout.length >= 3) {
+      const yStride = frame.layout[0].stride;
+      const yOffset = frame.layout[0].offset;
+      const uStride = frame.layout[1].stride;
+      const uOffset = frame.layout[1].offset;
+      const vStride = frame.layout[2].stride;
+      const vOffset = frame.layout[2].offset;
+
+      const packed = new Uint8Array(w * h + (w >> 1) * (h >> 1) * 2);
+      let dstOff = 0;
+      for (let r = 0; r < h; r++) {
+        packed.set(frame.data.subarray(yOffset + r * yStride, yOffset + r * yStride + w), dstOff);
+        dstOff += w;
+      }
+      const uvH = h >> 1;
+      const uvW = w >> 1;
+      for (let r = 0; r < uvH; r++) {
+        packed.set(frame.data.subarray(uOffset + r * uStride, uOffset + r * uStride + uvW), dstOff);
+        dstOff += uvW;
+      }
+      for (let r = 0; r < uvH; r++) {
+        packed.set(frame.data.subarray(vOffset + r * vStride, vOffset + r * vStride + uvW), dstOff);
+        dstOff += uvW;
+      }
+      return packed;
+    }
+
+    return null;
+  }
+
   // --- Audio DSP & Downmixing Helpers ---
 
   function extractPcmFromFrame(frame, origChannels) {
@@ -640,12 +686,16 @@
 
     const processedPlanes = downmixAndResample(flatPlanes, origChannels, origSampleRate, targetChannels, targetSampleRate);
 
-    if (onProgress) onProgress({ progress: 60, phase: 'Encoding AAC via libav' });
+    const isOpus = !options.isEmbeddedDoc && (options.audioMode === 'opus' || options.audioCodec === 'opus');
+    const audioEncoderName = isOpus ? 'libopus' : 'aac';
+    const audioSampleFmt = isOpus ? 3 : 8; // 3 = AV_SAMPLE_FMT_FLT (interleaved), 8 = AV_SAMPLE_FMT_FLTP (planar)
 
-    const [enc_codec, c_enc, enc_frame, enc_pkt, enc_frame_size] = await libav.ff_init_encoder('aac', {
+    if (onProgress) onProgress({ progress: 60, phase: `Encoding ${isOpus ? 'Opus' : 'AAC'} via libav` });
+
+    const [enc_codec, c_enc, enc_frame, enc_pkt, enc_frame_size] = await libav.ff_init_encoder(audioEncoderName, {
       ctx: {
         sample_rate: targetSampleRate,
-        sample_fmt: 8, // AV_SAMPLE_FMT_FLTP
+        sample_fmt: audioSampleFmt,
         bit_rate: targetBitrate,
         channels: targetChannels,
         channel_layout: targetChannels === 1 ? 4 : 3
@@ -653,10 +703,17 @@
       time_base: [1, targetSampleRate]
     });
 
-    const outFileName = 'output_' + Date.now() + '.m4a';
+    const frameSize = enc_frame_size || (isOpus ? 960 : 1024);
+    const outExt = isOpus ? (options.container === 'mkv' ? 'mkv' : 'opus') : 'm4a';
+    const outMime = isOpus ? (options.container === 'mkv' ? 'audio/x-matroska' : 'audio/opus') : 'audio/mp4';
+    const outFileName = 'output_' + Date.now() + '.' + outExt;
+
+    const aPar = await libav.avcodec_parameters_alloc();
+    await libav.avcodec_parameters_from_context(aPar, c_enc);
+
     const [oc, fmt, pb, sts] = await libav.ff_init_muxer(
-      { filename: outFileName, open: true },
-      [[c_enc, 1, targetSampleRate]]
+      { filename: outFileName, open: true, codecpars: true },
+      [[aPar, 1, targetSampleRate]]
     );
     await libav.avformat_write_header(oc, 0);
 
@@ -664,45 +721,83 @@
     const encodeFrames = [];
     let pts = 0;
 
-    for (let s = 0; s < totalSamples; s += enc_frame_size) {
-      const count = Math.min(enc_frame_size, totalSamples - s);
-      const plane0 = new Float32Array(enc_frame_size);
-      plane0.set(processedPlanes[0].subarray(s, s + count));
-      const plane1 = targetChannels === 2 ? new Float32Array(enc_frame_size) : null;
-      if (plane1) {
-        plane1.set(processedPlanes[1].subarray(s, s + count));
+    for (let s = 0; s < totalSamples; s += frameSize) {
+      const count = Math.min(frameSize, totalSamples - s);
+      let frameData;
+      if (isOpus) {
+        const interleaved = new Float32Array(frameSize * targetChannels);
+        for (let i = 0; i < count; i++) {
+          interleaved[i * targetChannels] = processedPlanes[0][s + i];
+          if (targetChannels === 2) {
+            interleaved[i * targetChannels + 1] = processedPlanes[1][s + i];
+          }
+        }
+        frameData = interleaved;
+      } else {
+        const plane0 = new Float32Array(frameSize);
+        plane0.set(processedPlanes[0].subarray(s, s + count));
+        const plane1 = targetChannels === 2 ? new Float32Array(frameSize) : null;
+        if (plane1) {
+          plane1.set(processedPlanes[1].subarray(s, s + count));
+        }
+        frameData = targetChannels === 1 ? [plane0] : [plane0, plane1];
       }
 
       encodeFrames.push({
-        data: targetChannels === 1 ? [plane0] : [plane0, plane1],
+        data: frameData,
         channels: targetChannels,
         channel_layout: targetChannels === 1 ? 4 : 3,
-        format: 8,
-        nb_samples: enc_frame_size,
+        format: audioSampleFmt,
+        nb_samples: frameSize,
         sample_rate: targetSampleRate,
         pts: pts,
         time_base_num: 1,
         time_base_den: targetSampleRate
       });
-      pts += enc_frame_size;
+      pts += frameSize;
     }
 
-    const aacPackets = await libav.ff_encode_multi(c_enc, enc_frame, enc_pkt, encodeFrames, { fin: true });
-    await libav.ff_write_multi(oc, enc_pkt, aacPackets);
+    const audioPackets = await libav.ff_encode_multi(c_enc, enc_frame, enc_pkt, encodeFrames, { fin: true });
+
+    let minAudioPts = 0;
+    for (const ap of audioPackets) {
+      if (ap.pts < minAudioPts) minAudioPts = ap.pts;
+    }
+    const audioPtsOffset = minAudioPts < 0 ? -minAudioPts : 0;
+
+    const muxList = [];
+    for (const ap of audioPackets) {
+      muxList.push({
+        type: 'a',
+        data: ap.data,
+        pts: ap.pts + audioPtsOffset,
+        dts: (ap.dts !== undefined ? ap.dts : ap.pts) + audioPtsOffset,
+        duration: ap.duration || frameSize,
+        flags: ap.flags || 1,
+        stream_index: 0,
+        time_base_num: 1,
+        time_base_den: targetSampleRate
+      });
+    }
+
+    const muxPkt = await libav.av_packet_alloc();
+    await libav.ff_write_multi(oc, muxPkt, muxList);
     await libav.av_write_trailer(oc);
     await libav.ff_free_muxer(oc, pb);
+    await libav.av_packet_free_js(muxPkt);
+    await libav.avcodec_parameters_free_js(aPar);
     await libav.ff_free_encoder(c_enc, enc_frame, enc_pkt);
 
-    const m4aBytes = await libav.readFile(outFileName);
+    const outBytes = await libav.readFile(outFileName);
     await libav.unlink(outFileName);
 
     if (onProgress) onProgress({ progress: 100, phase: 'Completed' });
 
     return {
-      buffer: m4aBytes.buffer,
-      blob: new Blob([m4aBytes], { type: 'audio/mp4' }),
-      mime: 'audio/mp4',
-      container: 'm4a',
+      buffer: outBytes.buffer,
+      blob: new Blob([outBytes], { type: outMime }),
+      mime: outMime,
+      container: outExt,
       duration: totalSamples / targetSampleRate
     };
   }
@@ -739,6 +834,9 @@
     let origFps = 30;
     if (vStream.framerate_num && vStream.framerate_den && vStream.framerate_den > 0) {
       origFps = Math.round(vStream.framerate_num / vStream.framerate_den);
+    } else if (vStream.time_base_num && vStream.time_base_den && vStream.time_base_den > 0) {
+      const calcFps = Math.round(vStream.time_base_den / vStream.time_base_num);
+      if (calcFps >= 1 && calcFps <= 120) origFps = calcFps;
     }
     if (origFps < 1 || origFps > 120) origFps = 30;
 
@@ -783,8 +881,12 @@
 
     // Setup VideoEncoder
     let encoderError = null;
+    let avcExtradata = null;
     const videoEncoder = new VideoEncoder({
       output: (chunk, metadata) => {
+        if (metadata && metadata.decoderConfig && metadata.decoderConfig.description && !avcExtradata) {
+          avcExtradata = new Uint8Array(metadata.decoderConfig.description);
+        }
         const chunkData = new Uint8Array(chunk.byteLength);
         chunk.copyTo(chunkData);
         encodedVideoChunks.push({
@@ -841,29 +943,28 @@
     let useHardwareDecoder = isModernCodec && typeof VideoDecoder !== 'undefined';
     let spsInfo = null;
     let avccDesc = null;
+    const isAvcc = !!(cp.extradata && cp.extradata.length > 0 && cp.extradata[0] === 1);
 
     if (useHardwareDecoder && vStream.codec_id === CODEC_IDS.H264) {
       // Parse SPS/PPS for AVC
-      if (cp.extradata) {
-        if (cp.extradata[0] === 1) { // AVCC extradata
-          avccDesc = cp.extradata;
-        } else { // Annex B extradata
-          const nals = extractAnnexBNals(cp.extradata);
-          let sps = null, pps = null;
-          for (const n of nals) {
-            const t = n[0] & 0x1f;
-            if (t === 7 && !sps) sps = n;
-            if (t === 8 && !pps) pps = n;
-          }
-          if (sps && pps) {
-            spsInfo = parseSpsInfo(sps);
-            avccDesc = createAvcC(sps, pps);
-          }
+      if (isAvcc) {
+        avccDesc = cp.extradata;
+      } else if (cp.extradata && cp.extradata.length > 0) {
+        const nals = extractAnnexBNals(cp.extradata);
+        let sps = null, pps = null;
+        for (const n of nals) {
+          const t = n[0] & 0x1f;
+          if (t === 7 && !sps) sps = n;
+          if (t === 8 && !pps) pps = n;
+        }
+        if (sps && pps) {
+          spsInfo = parseSpsInfo(sps);
+          avccDesc = createAvcC(sps, pps);
         }
       }
       if (!avccDesc) {
         // Try to find SPS/PPS in first video packets
-        for (const vp of videoPackets.slice(0, 5)) {
+        for (const vp of videoPackets.slice(0, 10)) {
           const nals = extractAnnexBNals(vp.data);
           let sps = null, pps = null;
           for (const n of nals) {
@@ -878,7 +979,26 @@
           }
         }
       }
-      if (!avccDesc) useHardwareDecoder = false;
+    }
+
+    // Timestamp analysis (handles AVI or streams with missing/zero PTS)
+    let hasValidPts = false;
+    if (videoPackets.length > 1) {
+      for (let k = 1; k < Math.min(15, videoPackets.length); k++) {
+        if (videoPackets[k].pts !== undefined && videoPackets[k].pts !== null && videoPackets[k].pts > 0) {
+          hasValidPts = true;
+          break;
+        }
+      }
+    }
+    let hasValidDts = false;
+    if (!hasValidPts && videoPackets.length > 1) {
+      for (let k = 1; k < Math.min(15, videoPackets.length); k++) {
+        if (videoPackets[k].dts !== undefined && videoPackets[k].dts !== null && videoPackets[k].dts > 0) {
+          hasValidDts = true;
+          break;
+        }
+      }
     }
 
     if (onProgress) onProgress({ progress: 25, phase: 'Decoding & filtering video' });
@@ -894,11 +1014,14 @@
         });
 
         const decCodec = (spsInfo && spsInfo.codec) ? spsInfo.codec : (vStream.codec_id === CODEC_IDS.HEVC ? 'hvc1.1.6.L93.B0' : 'avc1.4D401F');
-        await videoDecoder.configure({
+        const decConfig = {
           codec: decCodec,
-          description: avccDesc,
           hardwareAcceleration: 'no-preference'
-        });
+        };
+        if (avccDesc) {
+          decConfig.description = avccDesc;
+        }
+        await videoDecoder.configure(decConfig);
 
         const totalPkts = videoPackets.length;
         const tbNum = vStream.time_base_num || 1;
@@ -908,14 +1031,33 @@
           if (encoderError) throw encoderError;
           if (decoderError) throw decoderError;
 
+          while (videoDecoder.decodeQueueSize > 15 || videoEncoder.encodeQueueSize > 15) {
+            await new Promise(r => setTimeout(r, 8));
+          }
+
           const p = videoPackets[i];
-          const ptsUs = Math.round((p.pts * tbNum / tbDen) * 1e6);
-          const avccChunk = (vStream.codec_id === CODEC_IDS.H264) ? annexBToAvcc(p.data) : { data: p.data, isKey: !!(p.flags & 1) };
+          let ptsUs = 0;
+          if (hasValidPts && p.pts !== undefined && p.pts !== null && (p.pts !== 0 || i === 0)) {
+            ptsUs = Math.round((p.pts * tbNum / tbDen) * 1e6);
+          } else if (hasValidDts && p.dts !== undefined && p.dts !== null) {
+            ptsUs = Math.round((p.dts * tbNum / tbDen) * 1e6);
+          } else {
+            ptsUs = Math.round((i / origFps) * 1e6);
+          }
+
+          let chunkData = p.data;
+          let isKey = !!(p.flags & 1);
+
+          if (!isAvcc && vStream.codec_id === CODEC_IDS.H264) {
+            const avccChunk = annexBToAvcc(p.data);
+            chunkData = avccChunk.data;
+            if (avccChunk.isKey) isKey = true;
+          }
 
           const encChunk = new EncodedVideoChunk({
-            type: avccChunk.isKey || (p.flags & 1) ? 'key' : 'delta',
+            type: isKey ? 'key' : 'delta',
             timestamp: ptsUs,
-            data: avccChunk.data
+            data: chunkData
           });
           videoDecoder.decode(encChunk);
 
@@ -928,7 +1070,10 @@
         await videoDecoder.flush();
         videoDecoder.close();
       } catch (hwErr) {
-        console.warn('[MediaWorker] Hardware VideoDecoder failed, falling back to libav software decode:', hwErr);
+        console.warn('[MediaWorker] Hardware VideoDecoder failed:', hwErr);
+        if ([CODEC_IDS.H264, CODEC_IDS.HEVC, CODEC_IDS.VP8, CODEC_IDS.VP9, CODEC_IDS.AV1].includes(vStream.codec_id)) {
+          throw new Error('Hardware VideoDecoder failed for ' + (spsInfo?.codec || 'AVC/HEVC') + ': ' + (hwErr.message || hwErr));
+        }
         useHardwareDecoder = false;
       }
     }
@@ -942,34 +1087,35 @@
       const totalPkts = videoPackets.length;
       const tbNum = vStream.time_base_num || 1;
       const tbDen = vStream.time_base_den || 90000;
+      let softwareDecodedCount = 0;
 
       for (let i = 0; i < totalPkts; i += 20) {
         if (encoderError) throw encoderError;
+        while (videoEncoder.encodeQueueSize > 15) {
+          await new Promise(r => setTimeout(r, 8));
+        }
         const batch = videoPackets.slice(i, i + 20);
         const frames = await libav.ff_decode_multi(c_dec, dec_pkt, dec_frame, batch);
 
         for (const f of frames) {
-          const ptsUs = Math.round((f.pts * tbNum / tbDen) * 1e6);
-          // Convert decoded frame into VideoFrame
-          let vf = null;
-          if (f.data && Array.isArray(f.data) && f.data.length >= 3) {
-            // YUV420P planar
-            const w = f.width, h = f.height;
-            const yLen = w * h;
-            const uvLen = (w >> 1) * (h >> 1);
-            const yuvBuf = new Uint8Array(yLen + uvLen * 2);
-            yuvBuf.set(f.data[0], 0);
-            yuvBuf.set(f.data[1], yLen);
-            yuvBuf.set(f.data[2], yLen + uvLen);
+          let ptsUs = 0;
+          if (hasValidPts && f.pts !== undefined && f.pts !== null && (f.pts !== 0 || softwareDecodedCount === 0)) {
+            ptsUs = Math.round((f.pts * tbNum / tbDen) * 1e6);
+          } else if (hasValidDts && f.pkt_dts !== undefined && f.pkt_dts !== null) {
+            ptsUs = Math.round((f.pkt_dts * tbNum / tbDen) * 1e6);
+          } else {
+            ptsUs = Math.round((softwareDecodedCount / origFps) * 1e6);
+          }
+          softwareDecodedCount++;
 
-            vf = new VideoFrame(yuvBuf, {
+          const i420Data = extractPackedI420(f);
+          if (i420Data) {
+            const vf = new VideoFrame(i420Data, {
               format: 'I420',
-              codedWidth: w,
-              codedHeight: h,
+              codedWidth: f.width,
+              codedHeight: f.height,
               timestamp: ptsUs
             });
-          }
-          if (vf) {
             processAndEncodeFrame(vf);
           }
         }
@@ -987,11 +1133,16 @@
     videoEncoder.close();
 
     // Process Audio Track (if present and not muted)
-    let aacPackets = [];
+    let encodedAudioPackets = [];
     let audioTargetSampleRate = 48000;
+    let aPar = null;
+
+    const isOpus = !isEmbedded && (options.audioMode === 'opus' || options.audioCodec === 'opus');
+    const audioEncoderName = isOpus ? 'libopus' : 'aac';
+    const audioSampleFmt = isOpus ? 3 : 8; // 3 = AV_SAMPLE_FMT_FLT (interleaved float), 8 = AV_SAMPLE_FMT_FLTP (planar float)
 
     if (aStream && options.audioMode !== 'mute') {
-      if (onProgress) onProgress({ progress: 80, phase: 'Transcoding audio track via libav' });
+      if (onProgress) onProgress({ progress: 80, phase: `Transcoding audio track (${isOpus ? 'Opus' : 'AAC'}) via libav` });
       const [a_dec_codec, a_c_dec, a_dec_pkt, a_dec_frame] = await libav.ff_init_decoder(aStream.codec_id, {
         codecpar: aStream.codecpar
       });
@@ -1037,10 +1188,10 @@
         const aTargetBitrate = Number(options.audioBitrate) || 96000;
         const aProcessed = downmixAndResample(aFlatPlanes, aOrigCh, aOrigSr, aTargetCh, audioTargetSampleRate);
 
-        const [a_enc_codec, a_c_enc, a_enc_frame, a_enc_pkt, a_enc_fs] = await libav.ff_init_encoder('aac', {
+        const [a_enc_codec, a_c_enc, a_enc_frame, a_enc_pkt, a_enc_fs] = await libav.ff_init_encoder(audioEncoderName, {
           ctx: {
             sample_rate: audioTargetSampleRate,
-            sample_fmt: 8,
+            sample_fmt: audioSampleFmt,
             bit_rate: aTargetBitrate,
             channels: aTargetCh,
             channel_layout: aTargetCh === 1 ? 4 : 3
@@ -1048,30 +1199,48 @@
           time_base: [1, audioTargetSampleRate]
         });
 
+        const frameSize = a_enc_fs || (isOpus ? 960 : 1024);
         const aTotalS = aProcessed[0].length;
         const aEncFrames = [];
         let aPts = 0;
-        for (let s = 0; s < aTotalS; s += a_enc_fs) {
-          const count = Math.min(a_enc_fs, aTotalS - s);
-          const p0 = new Float32Array(a_enc_fs);
-          p0.set(aProcessed[0].subarray(s, s + count));
-          const p1 = aTargetCh === 2 ? new Float32Array(a_enc_fs) : null;
-          if (p1) p1.set(aProcessed[1].subarray(s, s + count));
+        for (let s = 0; s < aTotalS; s += frameSize) {
+          const count = Math.min(frameSize, aTotalS - s);
+          let frameData;
+          if (isOpus) {
+            const interleaved = new Float32Array(frameSize * aTargetCh);
+            for (let i = 0; i < count; i++) {
+              interleaved[i * aTargetCh] = aProcessed[0][s + i];
+              if (aTargetCh === 2) {
+                interleaved[i * aTargetCh + 1] = aProcessed[1][s + i];
+              }
+            }
+            frameData = interleaved;
+          } else {
+            const p0 = new Float32Array(frameSize);
+            p0.set(aProcessed[0].subarray(s, s + count));
+            const p1 = aTargetCh === 2 ? new Float32Array(frameSize) : null;
+            if (p1) p1.set(aProcessed[1].subarray(s, s + count));
+            frameData = aTargetCh === 1 ? [p0] : [p0, p1];
+          }
+
           aEncFrames.push({
-            data: aTargetCh === 1 ? [p0] : [p0, p1],
+            data: frameData,
             channels: aTargetCh,
             channel_layout: aTargetCh === 1 ? 4 : 3,
-            format: 8,
-            nb_samples: a_enc_fs,
+            format: audioSampleFmt,
+            nb_samples: frameSize,
             sample_rate: audioTargetSampleRate,
             pts: aPts,
             time_base_num: 1,
             time_base_den: audioTargetSampleRate
           });
-          aPts += a_enc_fs;
+          aPts += frameSize;
         }
 
-        aacPackets = await libav.ff_encode_multi(a_c_enc, a_enc_frame, a_enc_pkt, aEncFrames, { fin: true });
+        encodedAudioPackets = await libav.ff_encode_multi(a_c_enc, a_enc_frame, a_enc_pkt, aEncFrames, { fin: true });
+
+        aPar = await libav.avcodec_parameters_alloc();
+        await libav.avcodec_parameters_from_context(aPar, a_c_enc);
         await libav.ff_free_encoder(a_c_enc, a_enc_frame, a_enc_pkt);
       }
     }
@@ -1082,24 +1251,22 @@
     const outExt = finalContainer === 'mkv' ? 'mkv' : 'mp4';
     const outFileName = 'final_media_' + Date.now() + '.' + outExt;
 
-    // Build video codecpar
+    // Build video codecpar with extradata and format
     const vPar = await libav.avcodec_parameters_alloc();
-    await libav.AVCodecParameters_codec_type_s(vPar, 0);
-    await libav.AVCodecParameters_codec_id_s(vPar, finalCodecStr.startsWith('hvc') ? CODEC_IDS.HEVC : CODEC_IDS.H264);
-    await libav.AVCodecParameters_width_s(vPar, outW);
-    await libav.AVCodecParameters_height_s(vPar, outH);
+    await libav.ff_copyin_codecpar(vPar, {
+      codec_type: 0,
+      codec_id: finalCodecStr.startsWith('hvc') ? CODEC_IDS.HEVC : CODEC_IDS.H264,
+      width: outW,
+      height: outH,
+      format: 0, // AV_PIX_FMT_YUV420P
+      extradata: avcExtradata || new Uint8Array(0)
+    });
 
     const streamSpecs = [
       [vPar, 1, 1000000] // Video: timebase 1/1,000,000 (microseconds)
     ];
 
-    let aPar = null;
-    if (aacPackets.length > 0) {
-      aPar = await libav.avcodec_parameters_alloc();
-      await libav.AVCodecParameters_codec_type_s(aPar, 1);
-      await libav.AVCodecParameters_codec_id_s(aPar, CODEC_IDS.AAC);
-      await libav.AVCodecParameters_sample_rate_s(aPar, audioTargetSampleRate);
-      await libav.AVCodecParameters_channels_s(aPar, options.audioChannels === 'mono' ? 1 : 2);
+    if (aPar && encodedAudioPackets.length > 0) {
       streamSpecs.push([aPar, 1, audioTargetSampleRate]);
     }
 
@@ -1126,15 +1293,23 @@
       });
     }
 
-    if (aacPackets.length > 0) {
-      for (const ap of aacPackets) {
-        // ap.pts is in audioTargetSampleRate timebase
-        const audioPtsUs = Math.round((ap.pts / audioTargetSampleRate) * 1e6);
+    if (encodedAudioPackets.length > 0) {
+      let minAudioPts = 0;
+      for (const ap of encodedAudioPackets) {
+        if (ap.pts < minAudioPts) minAudioPts = ap.pts;
+      }
+      const audioPtsOffset = minAudioPts < 0 ? -minAudioPts : 0;
+
+      for (const ap of encodedAudioPackets) {
+        const adjPts = ap.pts + audioPtsOffset;
+        const adjDts = (ap.dts !== undefined ? ap.dts : ap.pts) + audioPtsOffset;
+        const audioPtsUs = Math.round((adjPts / audioTargetSampleRate) * 1e6);
         muxList.push({
           type: 'a',
           data: ap.data,
-          pts: ap.pts,
-          dts: ap.dts !== undefined ? ap.dts : ap.pts,
+          pts: adjPts,
+          dts: adjDts,
+          duration: ap.duration || (isOpus ? 960 : 1024),
           flags: ap.flags || 1,
           stream_index: 1,
           time_base_num: 1,
