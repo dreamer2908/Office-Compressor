@@ -87,7 +87,8 @@
       global: 'LibAV',
       sources: [
         './libs/libav-6.10.9.0-webcodecs-custom.js',
-        'https://cdn.jsdelivr.net/npm/@libav.js/variant-webcodecs@6.10.9/dist/libav-webcodecs.min.js'
+        'https://cdn.staticdelivr.com/gh/dreamer2908/Office-Compressor/refs/heads/main/libs/libav-6.10.9.0-webcodecs-custom.js',
+        'https://github.com/dreamer2908/Office-Compressor/raw/refs/heads/main/libs/libav-6.10.9.0-webcodecs-custom.js'
       ]
     }
   ];
@@ -169,8 +170,20 @@
     async loadDependency(dep) {
       // If already available on window, mark resolved
       if (window[dep.global]) {
+        if (dep.id === 'libav' && window.LibAV && !window.LibAV.base) {
+          window.LibAV.base = getBaseLibsUrl().replace(/\/+$/, '');
+        }
         this.status[dep.id] = { loaded: true, source: 'window', global: dep.global };
         return dep;
+      }
+
+      if (dep.id === 'libav' && typeof window !== 'undefined' && !window.instantiateLibavWasm) {
+        try {
+          const wasmDataUrl = resolveSourceUrl('./libs/libav-wasm-data.js');
+          await this.loadScriptFromUrl(wasmDataUrl, 3500);
+        } catch (e) {
+          console.warn('[Loader] Optional wasm-data script not loaded:', e.message);
+        }
       }
 
       for (let i = 0; i < dep.sources.length; i++) {
@@ -184,6 +197,9 @@
 
           // Verify global
           if (window[dep.global]) {
+            if (dep.id === 'libav' && window.LibAV && !window.LibAV.base) {
+              window.LibAV.base = getBaseLibsUrl().replace(/\/+$/, '');
+            }
             this.status[dep.id] = {
               loaded: true,
               source: isLocal ? 'local' : 'cdn',

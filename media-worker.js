@@ -91,16 +91,41 @@
         }
       }
 
+      // Self-healing for file:// execution: ensure wasm data binary is loaded if needed
+      const hasInstantiateWasm = typeof globalScope.instantiateLibavWasm === 'function' ||
+        (typeof window !== 'undefined' && typeof window.instantiateLibavWasm === 'function');
+      if (typeof document !== 'undefined' && !hasInstantiateWasm) {
+        try {
+          await new Promise((res) => {
+            const s = document.createElement('script');
+            s.src = base + '/libav-wasm-data.js';
+            s.onload = res;
+            s.onerror = res;
+            (document.head || document.documentElement).appendChild(s);
+          });
+        } catch (_) {}
+      }
+
       if (!LibAVFactory) {
         throw new Error('LibAV library is not available in environment');
       }
+
+      const instantiateWasm = options.instantiateWasm ||
+        (typeof globalScope !== 'undefined' && globalScope.instantiateLibavWasm) ||
+        (typeof window !== 'undefined' && window.instantiateLibavWasm);
+
+      const wasmBinary = options.wasmBinary ||
+        (typeof globalScope !== 'undefined' && globalScope.getLibavWasmBinary && globalScope.getLibavWasmBinary()) ||
+        (typeof window !== 'undefined' && window.getLibavWasmBinary && window.getLibavWasmBinary());
 
       LibAVFactory.base = base;
       LibAVFactory.wasmurl = wasmurl;
       const libav = await LibAVFactory.LibAV({
         base: base,
         wasmurl: wasmurl,
-        noworker: true
+        noworker: true,
+        ...(instantiateWasm ? { instantiateWasm } : {}),
+        ...(wasmBinary ? { wasmBinary } : {})
       });
       return libav;
     })().catch(err => {
@@ -1578,6 +1603,12 @@
   let _sequentialLock = Promise.resolve();
 
   function getActiveWorker() {
+    // Under file:// protocol, Web Workers cannot import local file:// scripts due to browser origin restrictions.
+    // Use the robust in-thread MediaProcessor directly (same as image-worker.js).
+    if (typeof window !== 'undefined' && window.location && window.location.protocol === 'file:') {
+      return null;
+    }
+
     if (!_workerInstance && typeof window !== 'undefined') {
       try {
         const scriptEl = typeof document !== 'undefined' ? document.querySelector('script[src*="media-worker.js"]') : null;
@@ -1604,6 +1635,11 @@
 
         _workerInstance.onerror = function (e) {
           console.error('[MediaWorker Thread Error]', e);
+          const err = new Error((e && e.message) || 'MediaWorker thread error');
+          for (const [id, job] of _pendingJobs.entries()) {
+            try { job.reject(err); } catch (_) {}
+          }
+          _pendingJobs.clear();
           _workerInstance = null;
         };
       } catch (e) {

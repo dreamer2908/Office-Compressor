@@ -592,7 +592,8 @@
    * Main Document Processor Router
    */
   async function processDocument(file, options = {}, onProgress = null) {
-    const ext = file.name.split('.').pop().toLowerCase();
+    const filename = options.filename || (file && file.name) || 'document';
+    const ext = filename.split('.').pop().toLowerCase();
     const arrayBuffer = file instanceof ArrayBuffer ? file : await file.arrayBuffer();
 
     if (ext === 'docx' || ext === 'pptx' || ext === 'xlsx') {
@@ -610,6 +611,7 @@
 
   const DocProcessor = {
     processDocument,
+    compressDocument: processDocument,
     processModernOffice,
     processLegacyExcel,
     processLegacyCompound,

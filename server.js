@@ -30,6 +30,16 @@ const MIME_TYPES = {
 };
 
 const server = http.createServer((req, res) => {
+  if (req.method === 'OPTIONS') {
+    res.writeHead(200, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': '*'
+    });
+    res.end();
+    return;
+  }
+
   let reqPath = decodeURIComponent(req.url.split('?')[0]);
 
   if (reqPath === '/api/test-log' && req.method === 'POST') {
