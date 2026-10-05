@@ -324,6 +324,7 @@
       finalSourceFps = timebaseFps;
     }
 
+    // Only override with packetAvgFps if it's not a doubled field-rate artifact
     if (packetAvgFps >= 1 && packetAvgFps <= 120 && packetAvgFps < finalSourceFps * 0.85) {
       finalSourceFps = packetAvgFps;
     }
@@ -522,6 +523,54 @@
     avcc[ppsPos + 2] = pps.length & 0xff;
     avcc.set(pps, ppsPos + 3);
     return avcc;
+  }
+
+  function sanitizeAvcC(desc) {
+    if (!desc || desc.length < 11 || desc[0] !== 1) return desc;
+    const numSps = desc[5] & 0x1f;
+    if (numSps !== 1) return desc;
+    const spsLen = (desc[6] << 8) | desc[7];
+    if (desc.length < 8 + spsLen + 3) return desc;
+    const sps = desc.subarray(8, 8 + spsLen);
+    const ppsPos = 8 + spsLen;
+    const numPps = desc[ppsPos];
+    if (numPps !== 1) return desc;
+    const ppsLen = (desc[ppsPos + 1] << 8) | desc[ppsPos + 2];
+    if (desc.length < ppsPos + 3 + ppsLen) return desc;
+    const pps = desc.subarray(ppsPos + 3, ppsPos + 3 + ppsLen);
+
+    let cleanSps = sps;
+    if (sps.length > 4 && sps[0] === 0x67 && sps[1] === 0x67) {
+      cleanSps = sps.subarray(1);
+    }
+    let cleanPps = pps;
+    if (pps.length > 2 && pps[0] === 0x68 && pps[1] === 0x68) {
+      cleanPps = pps.subarray(1);
+    }
+
+    if (cleanSps !== sps || cleanPps !== pps) {
+      return createAvcC(cleanSps, cleanPps);
+    }
+    return desc;
+  }
+
+  function extractAvcCFromAvccChunk(chunkData) {
+    if (!chunkData || chunkData.length < 8) return null;
+    let pos = 0;
+    const len = chunkData.length;
+    let sps = null, pps = null;
+    while (pos + 4 < len) {
+      const nalLen = (chunkData[pos] << 24) | (chunkData[pos + 1] << 16) | (chunkData[pos + 2] << 8) | chunkData[pos + 3];
+      pos += 4;
+      if (pos + nalLen > len) break;
+      const nal = chunkData.subarray(pos, pos + nalLen);
+      pos += nalLen;
+      const t = nal[0] & 0x1f;
+      if (t === 7 && !sps) sps = nal;
+      if (t === 8 && !pps) pps = nal;
+    }
+    if (sps && pps) return createAvcC(sps, pps);
+    return null;
   }
 
   function extractAnnexBNals(bytes) {
@@ -962,7 +1011,8 @@
       displayW = Math.round(codedW * (sarNum / sarDen));
     }
 
-    const { width: outW, height: outH } = calculateVideoDimensions(displayW, codedH, options.targetResolution);
+    const targetRes = options.targetResolution || options.maxResolution || '720p';
+    const { width: outW, height: outH } = calculateVideoDimensions(displayW, codedH, targetRes);
 
     const isEmbedded = !!options.isEmbeddedDoc;
     const finalContainer = isEmbedded ? 'mp4' : (options.container === 'mkv' ? 'mkv' : 'mp4');
@@ -1014,9 +1064,10 @@
 
     // Target FPS determination:
     // "In case where source fps (either constant fps or average variable fps) < target fps, keep the original fps."
+    const reqFpsOpt = options.targetFps || options.fps;
     let targetFps = origFps;
-    if (options.targetFps && options.targetFps !== 'original') {
-      const reqFps = Number(options.targetFps);
+    if (reqFpsOpt && reqFpsOpt !== 'original') {
+      const reqFps = Number(reqFpsOpt);
       if (!isNaN(reqFps) && reqFps > 0) {
         if (sourceFps < reqFps) {
           targetFps = origFps;
@@ -1062,10 +1113,14 @@
     const videoEncoder = new VideoEncoder({
       output: (chunk, metadata) => {
         if (metadata && metadata.decoderConfig && metadata.decoderConfig.description && !avcExtradata) {
-          avcExtradata = new Uint8Array(metadata.decoderConfig.description);
+          avcExtradata = sanitizeAvcC(new Uint8Array(metadata.decoderConfig.description));
         }
         const chunkData = new Uint8Array(chunk.byteLength);
         chunk.copyTo(chunkData);
+        if (chunk.type === 'key' && !avcExtradata) {
+          const fromChunk = extractAvcCFromAvccChunk(chunkData);
+          if (fromChunk) avcExtradata = fromChunk;
+        }
         encodedVideoChunks.push({
           data: chunkData,
           type: chunk.type,
@@ -1100,7 +1155,7 @@
       const ptsUs = Math.round(frame.timestamp);
       if (firstPtsUs === null) firstPtsUs = ptsUs;
 
-      if (lastEncodedPtsUs !== -Infinity && (ptsUs - lastEncodedPtsUs) < (minIntervalUs * 0.75)) {
+      if (lastEncodedPtsUs !== -Infinity && ptsUs >= lastEncodedPtsUs && (ptsUs - lastEncodedPtsUs) < (minIntervalUs * 0.75)) {
         frame.close();
         return;
       }
@@ -1193,6 +1248,7 @@
         const tbNum = vStream.time_base_num || 1;
         const tbDen = vStream.time_base_den || 90000;
 
+        let lastKnownPtsUs = null;
         for (let i = 0; i < totalPkts; i++) {
           if (encoderError) throw encoderError;
           if (decoderError) throw decoderError;
@@ -1205,10 +1261,16 @@
           let ptsUs = 0;
           if (hasValidPts && p.pts !== undefined && p.pts !== null && (p.pts !== 0 || i === 0)) {
             ptsUs = Math.round((p.pts * tbNum / tbDen) * 1e6);
+            lastKnownPtsUs = ptsUs;
           } else if (hasValidDts && p.dts !== undefined && p.dts !== null) {
             ptsUs = Math.round((p.dts * tbNum / tbDen) * 1e6);
+            lastKnownPtsUs = ptsUs;
+          } else if (lastKnownPtsUs !== null) {
+            ptsUs = lastKnownPtsUs + Math.round((1 / (origFps * 2)) * 1e6);
+            lastKnownPtsUs = ptsUs;
           } else {
             ptsUs = Math.round((i / origFps) * 1e6);
+            lastKnownPtsUs = ptsUs;
           }
 
           let chunkData = p.data;
@@ -1418,6 +1480,15 @@
     const outFileName = 'final_media_' + Date.now() + '.' + outExt;
 
     // Build video codecpar with extradata and format
+    if (!avcExtradata && encodedVideoChunks.length > 0) {
+      for (const vc of encodedVideoChunks) {
+        if (vc.type === 'key') {
+          avcExtradata = extractAvcCFromAvccChunk(vc.data);
+          if (avcExtradata) break;
+        }
+      }
+    }
+
     const vPar = await libav.avcodec_parameters_alloc();
     await libav.ff_copyin_codecpar(vPar, {
       codec_type: 0,
@@ -1444,18 +1515,61 @@
 
     const muxPkt = await libav.av_packet_alloc();
 
-    // Prepare interleaved packets
+    // Prepare video packets with strictly monotonic DTS and decode order preserved
+    const frameIntervalUs = Math.round(1000000 / targetFps);
+    const numVideo = encodedVideoChunks.length;
+
+    // Check if PTS sequence has reordering (B-frames)
+    let hasBframes = false;
+    for (let i = 1; i < numVideo; i++) {
+      if (encodedVideoChunks[i].timestamp < encodedVideoChunks[i - 1].timestamp) {
+        hasBframes = true;
+        break;
+      }
+    }
+
+    // Compute DTS and PTS for each chunk
+    const videoDtsList = [];
+    const videoPtsList = [];
+
+    if (!hasBframes) {
+      // Monotonic stream: DTS == PTS
+      for (let i = 0; i < numVideo; i++) {
+        const ts = encodedVideoChunks[i].timestamp;
+        videoDtsList.push(ts);
+        videoPtsList.push(ts);
+      }
+    } else {
+      // Stream with B-frames:
+      // Encoder emitted chunks in decode order. Compute monotonic DTS:
+      let minDiff = 0;
+      for (let i = 0; i < numVideo; i++) {
+        const dts = i * frameIntervalUs;
+        const pts = encodedVideoChunks[i].timestamp;
+        const diff = pts - dts;
+        if (diff < minDiff) minDiff = diff;
+      }
+      const ptsOffset = minDiff < 0 ? -minDiff : 0;
+      for (let i = 0; i < numVideo; i++) {
+        videoDtsList.push(i * frameIntervalUs);
+        videoPtsList.push(encodedVideoChunks[i].timestamp + ptsOffset);
+      }
+    }
+
+    // Build mux list keeping decode order for video
     const muxList = [];
-    for (const vc of encodedVideoChunks) {
+    for (let i = 0; i < numVideo; i++) {
+      const vc = encodedVideoChunks[i];
       muxList.push({
         type: 'v',
         data: vc.data,
-        pts: vc.timestamp,
-        dts: vc.timestamp,
+        pts: videoPtsList[i],
+        dts: videoDtsList[i],
         flags: vc.type === 'key' ? 1 : 0,
         stream_index: 0,
         time_base_num: 1,
-        time_base_den: 1000000
+        time_base_den: 1000000,
+        sortDtsUs: videoDtsList[i]
       });
     }
 
@@ -1469,7 +1583,7 @@
       for (const ap of encodedAudioPackets) {
         const adjPts = ap.pts + audioPtsOffset;
         const adjDts = (ap.dts !== undefined ? ap.dts : ap.pts) + audioPtsOffset;
-        const audioPtsUs = Math.round((adjPts / audioTargetSampleRate) * 1e6);
+        const audioDtsUs = Math.round((adjDts / audioTargetSampleRate) * 1e6);
         muxList.push({
           type: 'a',
           data: ap.data,
@@ -1480,17 +1594,13 @@
           stream_index: 1,
           time_base_num: 1,
           time_base_den: audioTargetSampleRate,
-          ptsUs: audioPtsUs
+          sortDtsUs: audioDtsUs
         });
       }
     }
 
-    // Sort by timestamp for proper interleaving
-    muxList.sort((a, b) => {
-      const ptsA = a.type === 'v' ? a.pts : a.ptsUs;
-      const ptsB = b.type === 'v' ? b.pts : b.ptsUs;
-      return ptsA - ptsB;
-    });
+    // Sort by decode timestamp (DTS) for proper container multiplexing
+    muxList.sort((a, b) => a.sortDtsUs - b.sortDtsUs);
 
     await libav.ff_write_multi(oc, muxPkt, muxList);
     await libav.av_write_trailer(oc);
