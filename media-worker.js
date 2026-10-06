@@ -41,7 +41,7 @@
     VP9: 166,
     AV1: 222,
     WMV1: 17,
-    WMV2: 8,
+    WMV2: 18,
     MPEG4: 12,
     MJPEG: 7,
     MPEG2VIDEO: 2,
@@ -89,21 +89,6 @@
         } catch (e) {
           console.warn('[MediaWorker] Failed to load libav via importScripts:', libavUrl, e);
         }
-      }
-
-      // Self-healing for file:// execution: ensure wasm data binary is loaded if needed
-      const hasInstantiateWasm = typeof globalScope.instantiateLibavWasm === 'function' ||
-        (typeof window !== 'undefined' && typeof window.instantiateLibavWasm === 'function');
-      if (typeof document !== 'undefined' && !hasInstantiateWasm) {
-        try {
-          await new Promise((res) => {
-            const s = document.createElement('script');
-            s.src = base + '/libav-wasm-data.js';
-            s.onload = res;
-            s.onerror = res;
-            (document.head || document.documentElement).appendChild(s);
-          });
-        } catch (_) {}
       }
 
       if (!LibAVFactory) {

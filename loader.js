@@ -177,14 +177,6 @@
         return dep;
       }
 
-      if (dep.id === 'libav' && typeof window !== 'undefined' && !window.instantiateLibavWasm) {
-        try {
-          const wasmDataUrl = resolveSourceUrl('./libs/libav-wasm-data.js');
-          await this.loadScriptFromUrl(wasmDataUrl, 3500);
-        } catch (e) {
-          console.warn('[Loader] Optional wasm-data script not loaded:', e.message);
-        }
-      }
 
       for (let i = 0; i < dep.sources.length; i++) {
         const rawUrl = dep.sources[i];

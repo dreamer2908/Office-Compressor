@@ -47,6 +47,9 @@ const server = http.createServer((req, res) => {
     req.on('data', chunk => body += chunk);
     req.on('end', () => {
       console.log('[BROWSER TEST LOG]', body);
+      try {
+        fs.appendFileSync(path.join(BASE_DIR, '..', 'tests', 'browser_live.log'), body + '\n');
+      } catch (e) {}
       res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
       res.end(JSON.stringify({ ok: true }));
     });
