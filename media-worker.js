@@ -324,8 +324,14 @@
     };
   }
 
+  function isWebCodecsSupported() {
+    return typeof VideoEncoder !== 'undefined' &&
+           typeof VideoDecoder !== 'undefined' &&
+           typeof VideoEncoder.isConfigSupported === 'function';
+  }
+
   async function testSupportedCodecs() {
-    if (typeof VideoEncoder === 'undefined' || !VideoEncoder.isConfigSupported) {
+    if (!isWebCodecsSupported()) {
       return [];
     }
 
@@ -975,6 +981,16 @@
   async function processVideoPipeline(libav, fmt_ctx, streams, options, onProgress) {
     const vStream = streams.find(s => s.codec_type === 0);
     if (!vStream) throw new Error('No video stream found in media file');
+
+    const hasWebCodecs = (typeof MediaProcessor !== 'undefined' && MediaProcessor.isWebCodecsSupported ? MediaProcessor.isWebCodecsSupported() : isWebCodecsSupported()) && !options.disableWebCodecs;
+    if (!hasWebCodecs) {
+      const isUnsecure = (typeof window !== 'undefined' && window.isSecureContext === false) ||
+                         (typeof self !== 'undefined' && self.isSecureContext === false);
+      const reason = isUnsecure
+        ? 'WebCodecs is unavailable because this page is loaded in an unsecure context (HTTP). Video encoding requires HTTPS or localhost.'
+        : 'WebCodecs (VideoEncoder) is not supported in this browser or environment.';
+      throw new Error(`Video encoding unavailable: ${reason}`);
+    }
 
     const aStream = streams.find(s => s.codec_type === 1);
     const cp = await libav.ff_copyout_codecpar(vStream.codecpar);
@@ -1757,6 +1773,18 @@
       const buffer = isBuffer ? inputBlobOrBuffer : await inputBlobOrBuffer.arrayBuffer();
       const filename = options.filename || (inputBlobOrBuffer.name || 'media');
 
+      // Validate WebCodecs availability if video processing is requested
+      const isAudioOnly = options.mode === 'audio-only' || (filename && AUDIO_EXT_REGEX.test(filename));
+      const hasWebCodecs = (typeof MediaProcessor !== 'undefined' && MediaProcessor.isWebCodecsSupported ? MediaProcessor.isWebCodecsSupported() : isWebCodecsSupported()) && !options.disableWebCodecs;
+      if (!isAudioOnly && !hasWebCodecs) {
+        const isUnsecure = (typeof window !== 'undefined' && window.isSecureContext === false) ||
+                           (typeof self !== 'undefined' && self.isSecureContext === false);
+        const reason = isUnsecure
+          ? 'WebCodecs is unavailable because this page is loaded in an unsecure context (HTTP). Video encoding requires HTTPS or localhost.'
+          : 'WebCodecs (VideoEncoder) is not supported in this browser or environment.';
+        throw new Error(`[MediaWorker] Video encoding disabled: ${reason}`);
+      }
+
       // Resolve libav paths for worker
       const scriptEl = typeof document !== 'undefined' ? (document.querySelector('script[src*="media-worker.js"]') || document.querySelector('script[src*="loader.js"]')) : null;
       const baseOrigin = scriptEl && scriptEl.src ? new URL('./', scriptEl.src).href : (typeof window !== 'undefined' ? window.location.origin + '/' : './');
@@ -1785,6 +1813,7 @@
     compressVideo: compressMediaClient,
     compressAudio: (input, opts, prog) => compressMediaClient(input, { ...opts, mode: 'audio-only' }, prog),
     testSupportedCodecs,
+    isWebCodecsSupported,
     calculateVideoDimensions,
     calculateTargetBitrate,
     QUALITY_FACTORS

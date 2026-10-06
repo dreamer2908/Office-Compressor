@@ -45,6 +45,7 @@
     console.log(`[DocProcessor] Found ${totalMedia} embedded media items in document.`);
 
     let processedCount = 0;
+    let skippedVideoCount = 0;
 
     for (const item of mediaEntries) {
       const origBuffer = await item.file.async('arraybuffer');
@@ -75,9 +76,27 @@
           console.warn(`[DocProcessor] Skipping uncompressible image ${item.path}:`, e);
         }
       } else if (item.type === 'video') {
+        const processor = globalScope.MediaProcessor || globalScope.VideoProcessor;
+        const hasWebCodecs = typeof VideoEncoder !== 'undefined' &&
+          typeof VideoEncoder.isConfigSupported === 'function' &&
+          (!processor || !processor.isWebCodecsSupported || processor.isWebCodecsSupported());
+
+        if (!hasWebCodecs) {
+          const isUnsecure = typeof window !== 'undefined' && window.isSecureContext === false;
+          console.warn(`[DocProcessor] Skipping embedded video ${item.path}: WebCodecs is unavailable${isUnsecure ? ' (unsecure HTTP context)' : ''}. Keeping original video intact.`);
+          if (onProgress && totalMedia > 0) {
+            onProgress({
+              phase: `Keeping video intact (WebCodecs unavailable): ${item.path.split('/').pop()}`,
+              progress: Math.min(85, Math.round(((processedCount + 1) / totalMedia) * 80))
+            });
+          }
+          skippedVideoCount++;
+          processedCount++;
+          continue;
+        }
+
         try {
           // Recompress video with STRICT embedded rules: AVC + AAC MP4 only!
-          const processor = globalScope.MediaProcessor || globalScope.VideoProcessor;
           const result = await processor.compressMedia(origBuffer, {
             ...options.videoOptions,
             container: 'mp4',
@@ -234,7 +253,9 @@
       blob: outBlob,
       buffer: await outBlob.arrayBuffer(),
       mime: 'application/vnd.openxmlformats-officedocument',
-      mediaCount: totalMedia
+      mediaCount: totalMedia,
+      hasSkippedVideo: skippedVideoCount > 0,
+      skippedVideoCount
     };
   }
 

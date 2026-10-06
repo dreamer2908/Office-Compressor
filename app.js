@@ -220,13 +220,44 @@
     }
   }
 
-  // Dynamic Hardware Codec Detection
+  // Helper: Check if WebCodecs is available in this browser environment
+  function isWebCodecsAvailable() {
+    const processor = window.MediaProcessor || window.VideoProcessor;
+    if (processor && typeof processor.isWebCodecsSupported === 'function') {
+      return processor.isWebCodecsSupported();
+    }
+    return typeof VideoEncoder !== 'undefined' && typeof VideoEncoder.isConfigSupported === 'function';
+  }
+
+  // Dynamic Hardware Codec Detection & WebCodecs Availability Check
   async function detectCodecs() {
     const processor = window.MediaProcessor || window.VideoProcessor;
-    if (processor && processor.testSupportedCodecs) {
+    const hasWebCodecs = isWebCodecsAvailable();
+    const isSecure = typeof window.isSecureContext === 'boolean' ? window.isSecureContext : true;
+
+    // Show/hide security context / WebCodecs warning banner
+    const banner = document.getElementById('webcodecs-warning-banner');
+    if (banner) {
+      if (!hasWebCodecs) {
+        banner.style.display = 'flex';
+        const reasonEl = document.getElementById('webcodecs-warning-reason');
+        if (reasonEl) {
+          if (!isSecure) {
+            reasonEl.innerHTML = 'WebCodecs is unavailable because this page is served over an <strong>unsecure HTTP connection</strong> (non-localhost). Video encoding is disabled; standalone videos will be skipped and embedded document videos will remain intact. Access via <strong>HTTPS</strong> or <strong>localhost</strong> to enable video compression.';
+          } else {
+            reasonEl.innerHTML = 'WebCodecs (VideoEncoder) is not supported by your current browser. Video encoding is disabled; standalone videos will be skipped and embedded document videos will remain intact. Use a modern browser (Edge, Chrome, or Firefox).';
+          }
+        }
+      } else {
+        banner.style.display = 'none';
+      }
+    }
+
+    if (processor && processor.testSupportedCodecs && hasWebCodecs) {
       state.supportedCodecs = await processor.testSupportedCodecs();
       if (DOM.codecSelect) {
         DOM.codecSelect.innerHTML = '';
+        DOM.codecSelect.disabled = false;
         if (state.supportedCodecs.length === 0) {
           DOM.codecSelect.innerHTML = '<option value="avc1.4D401F">AVC / H.264 (Default)</option>';
         } else {
@@ -238,6 +269,24 @@
           });
         }
       }
+      if (DOM.customVideoRes) DOM.customVideoRes.disabled = false;
+      if (DOM.customVideoFps) DOM.customVideoFps.disabled = false;
+      if (DOM.customRateControl) DOM.customRateControl.disabled = false;
+      if (DOM.customQualityFactor) DOM.customQualityFactor.disabled = false;
+      if (DOM.customExactBitrate) DOM.customExactBitrate.disabled = false;
+      if (DOM.customTargetSize) DOM.customTargetSize.disabled = false;
+    } else {
+      state.supportedCodecs = [];
+      if (DOM.codecSelect) {
+        DOM.codecSelect.innerHTML = '<option value="">Video encoding disabled (WebCodecs unavailable)</option>';
+        DOM.codecSelect.disabled = true;
+      }
+      if (DOM.customVideoRes) DOM.customVideoRes.disabled = true;
+      if (DOM.customVideoFps) DOM.customVideoFps.disabled = true;
+      if (DOM.customRateControl) DOM.customRateControl.disabled = true;
+      if (DOM.customQualityFactor) DOM.customQualityFactor.disabled = true;
+      if (DOM.customExactBitrate) DOM.customExactBitrate.disabled = true;
+      if (DOM.customTargetSize) DOM.customTargetSize.disabled = true;
     }
   }
 
@@ -340,20 +389,28 @@
         return;
       }
 
+      const isVideo = typeInfo.category === 'video';
+      const noWebCodecs = isVideo && !isWebCodecsAvailable();
+      const isUnsecure = typeof window !== 'undefined' && window.isSecureContext === false;
+
       const item = {
         id: 'item_' + Math.random().toString(36).substr(2, 9),
         file,
         name: file.name,
         typeInfo,
         originalSize: file.size,
-        compressedSize: null,
-        status: 'queued', // 'queued' | 'processing' | 'completed' | 'error'
-        progress: 0,
-        phase: 'Ready',
-        resultBlob: null,
-        resultUrl: null,
+        compressedSize: noWebCodecs ? file.size : null,
+        status: noWebCodecs ? 'skipped' : 'queued',
+        progress: noWebCodecs ? 100 : 0,
+        phase: noWebCodecs ? 'Skipped (No WebCodecs)' : 'Ready',
+        resultBlob: noWebCodecs ? file : null,
+        resultUrl: noWebCodecs ? createManagedUrl(file) : null,
         finalName: file.name,
-        error: null
+        error: noWebCodecs
+          ? (isUnsecure
+              ? 'Video encoding disabled in unsecure context (HTTP). Access via HTTPS or localhost.'
+              : 'Video encoding disabled: WebCodecs (VideoEncoder) not supported by browser.')
+          : null
       };
 
       state.queue.push(item);
@@ -535,6 +592,8 @@
             ${isSmaller ? `-${pct}%` : '0%'} (${formatBytes(Math.abs(diff))})
           </span>
         `;
+      } else if (item.status === 'skipped') {
+        savedHtml = `<span class="badge badge-neutral" title="${item.error || 'Kept original'}">Intact (0%)</span>`;
       }
 
       // Status & Progress Bar
@@ -552,13 +611,15 @@
         `;
       } else if (item.status === 'completed') {
         statusHtml = `<span class="status-pill status-completed">✓ Completed</span>`;
+      } else if (item.status === 'skipped') {
+        statusHtml = `<span class="status-pill dep-warn" style="font-size:0.75rem; padding:0.25rem 0.65rem;" title="${item.error || 'Skipped'}">⚠️ Skipped</span>`;
       } else if (item.status === 'error') {
         statusHtml = `<span class="status-pill status-error" title="${item.error || 'Failed'}">⚠️ Error</span>`;
       }
 
       // Action Buttons
       let actionHtml = '';
-      if (item.status === 'completed') {
+      if (item.status === 'completed' || item.status === 'skipped') {
         actionHtml = `
           <button class="btn btn-sm btn-primary" onclick="window.App.downloadItem('${item.id}')">💾 Save</button>
           ${item.typeInfo.category !== 'document' ? `
@@ -605,15 +666,19 @@
       compCell.textContent = formatBytes(item.compressedSize);
     }
 
-    if (savedCell && item.status === 'completed' && item.compressedSize !== null) {
-      const diff = item.originalSize - item.compressedSize;
-      const pct = Math.round((diff / item.originalSize) * 100);
-      const isSmaller = diff > 0;
-      savedCell.innerHTML = `
-        <span class="badge ${isSmaller ? 'badge-success' : 'badge-neutral'}">
-          ${isSmaller ? `-${pct}%` : '0%'} (${formatBytes(Math.abs(diff))})
-        </span>
-      `;
+    if (savedCell) {
+      if (item.status === 'completed' && item.compressedSize !== null) {
+        const diff = item.originalSize - item.compressedSize;
+        const pct = Math.round((diff / item.originalSize) * 100);
+        const isSmaller = diff > 0;
+        savedCell.innerHTML = `
+          <span class="badge ${isSmaller ? 'badge-success' : 'badge-neutral'}">
+            ${isSmaller ? `-${pct}%` : '0%'} (${formatBytes(Math.abs(diff))})
+          </span>
+        `;
+      } else if (item.status === 'skipped') {
+        savedCell.innerHTML = `<span class="badge badge-neutral" title="${item.error || 'Kept original'}">Intact (0%)</span>`;
+      }
     }
 
     if (statusCell) {
@@ -628,12 +693,14 @@
         `;
       } else if (item.status === 'completed') {
         statusCell.innerHTML = `<span class="status-pill status-completed">✓ Completed</span>`;
+      } else if (item.status === 'skipped') {
+        statusCell.innerHTML = `<span class="status-pill dep-warn" style="font-size:0.75rem; padding:0.25rem 0.65rem;" title="${item.error || 'Skipped'}">⚠️ Skipped</span>`;
       } else if (item.status === 'error') {
         statusCell.innerHTML = `<span class="status-pill status-error" title="${item.error || 'Failed'}">⚠️ Error</span>`;
       }
     }
 
-    if (actionCell && item.status === 'completed') {
+    if (actionCell && (item.status === 'completed' || item.status === 'skipped')) {
       actionCell.innerHTML = `
         <button class="btn btn-sm btn-primary" onclick="window.App.downloadItem('${item.id}')">💾 Save</button>
         ${item.typeInfo.category !== 'document' ? `
@@ -646,7 +713,7 @@
   // Update Global Progress and Batch Statistics
   function updateGlobalStats() {
     const total = state.queue.length;
-    const completed = state.queue.filter((i) => i.status === 'completed').length;
+    const completed = state.queue.filter((i) => i.status === 'completed' || i.status === 'skipped').length;
     const processing = state.queue.filter((i) => i.status === 'processing').length;
 
     let origBytes = 0;
@@ -713,6 +780,22 @@
         item.compressedSize = res.buffer.byteLength;
         item.resultUrl = createManagedUrl(res.blob);
       } else if (item.typeInfo.category === 'video') {
+        if (!isWebCodecsAvailable()) {
+          const isUnsecure = typeof window !== 'undefined' && window.isSecureContext === false;
+          item.status = 'skipped';
+          item.phase = 'Skipped (No WebCodecs)';
+          item.progress = 100;
+          item.compressedSize = item.originalSize;
+          item.finalName = item.name;
+          item.resultBlob = item.file;
+          item.resultUrl = createManagedUrl(item.file);
+          item.error = isUnsecure
+            ? 'Video encoding disabled in unsecure context (HTTP). Access via HTTPS or localhost.'
+            : 'Video encoding disabled: WebCodecs (VideoEncoder) not supported by browser.';
+          console.warn(`[App] Skipping standalone video "${item.name}": ${item.error}`);
+          return;
+        }
+
         item.phase = 'Transcoding Video';
         updateRow(item);
 
@@ -767,11 +850,16 @@
         item.resultBlob = res.blob;
         item.compressedSize = res.buffer ? res.buffer.byteLength : res.blob.size;
         item.resultUrl = createManagedUrl(res.blob);
+        if (res.hasSkippedVideo) {
+          item.phase = 'Completed (Embedded video kept intact)';
+        }
       }
 
-      item.status = 'completed';
-      item.progress = 100;
-      item.phase = 'Completed';
+      if (item.status !== 'skipped') {
+        item.status = 'completed';
+        item.progress = 100;
+        item.phase = item.phase && item.phase.startsWith('Completed') ? item.phase : 'Completed';
+      }
     } catch (err) {
       console.error(`[Queue] Failed processing item ${item.name}:`, err);
       item.status = 'error';
@@ -841,7 +929,7 @@
 
   // Download All Items as a single ZIP Archive via JSZip
   async function downloadAllAsZip() {
-    const completedItems = state.queue.filter((i) => i.status === 'completed' && i.resultBlob);
+    const completedItems = state.queue.filter((i) => (i.status === 'completed' || i.status === 'skipped') && i.resultBlob);
     if (completedItems.length === 0) return;
 
     DOM.btnDownloadAll.textContent = '⏳ Compressing ZIP...';
@@ -1032,11 +1120,18 @@
     if (window.DependencyLoader) {
       window.DependencyLoader.ready().then((info) => {
         const isAllLoaded = info.loaded === info.total;
-        DOM.depStatusPill.className = `dep-pill ${isAllLoaded ? 'dep-ok' : 'dep-warn'}`;
-        DOM.depStatusPill.textContent = `${info.loaded}/${info.total} Libs Ready`;
-        DOM.depStatusPill.title = Object.entries(info.status)
-          .map(([k, v]) => `${k}: ${v.loaded ? v.source : 'failed'}`)
-          .join('\n');
+        const hasWebCodecs = isWebCodecsAvailable();
+        if (!hasWebCodecs) {
+          DOM.depStatusPill.className = 'dep-pill dep-warn';
+          DOM.depStatusPill.textContent = `${info.loaded}/${info.total} Ready • No Video Enc`;
+          DOM.depStatusPill.title = 'WebCodecs is unavailable (unsecure HTTP context or unsupported browser).\nVideo encoding disabled; documents, audio, and images will still compress.';
+        } else {
+          DOM.depStatusPill.className = `dep-pill ${isAllLoaded ? 'dep-ok' : 'dep-warn'}`;
+          DOM.depStatusPill.textContent = `${info.loaded}/${info.total} Libs Ready`;
+          DOM.depStatusPill.title = Object.entries(info.status)
+            .map(([k, v]) => `${k}: ${v.loaded ? v.source : 'failed'}`)
+            .join('\n');
+        }
       });
     }
   }
