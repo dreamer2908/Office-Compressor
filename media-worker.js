@@ -613,6 +613,114 @@
     return { data: out, isKey };
   }
 
+  function createHvcC(vps, sps, pps) {
+    if (!vps || !sps || !pps) return null;
+    const totalLen = 23 + (3 + 2 + vps.length) + (3 + 2 + sps.length) + (3 + 2 + pps.length);
+    const hvcc = new Uint8Array(totalLen);
+
+    hvcc[0] = 1; // configurationVersion = 1
+
+    if (sps.length >= 15) {
+      hvcc.set(sps.subarray(3, 15), 1);
+    } else {
+      hvcc[1] = 1; // Main profile
+      hvcc[2] = 0x60; // compat flags
+      hvcc[12] = 120; // Level 4.0
+    }
+
+    hvcc[13] = 0xf0; // min_spatial_segmentation_idc (4 bits reserved 1111b | 12 bits idc)
+    hvcc[14] = 0x00;
+    hvcc[15] = 0xfc; // parallelismType (6 bits reserved 111111b | 2 bits type)
+    hvcc[16] = 0xfd; // chroma_format_idc (6 bits reserved 111111b | 2 bits 01b = 4:2:0)
+    hvcc[17] = 0xf8; // bit_depth_luma_minus8 (5 bits reserved 11111b | 3 bits 000b = 8-bit)
+    hvcc[18] = 0xf8; // bit_depth_chroma_minus8 (5 bits reserved 11111b | 3 bits 000b = 8-bit)
+    hvcc[19] = 0x00; // avgFrameRate = 0
+    hvcc[20] = 0x00;
+    hvcc[21] = 0x0f; // constantFrameRate(0) | numTemporalLayers(0) | temporalIdNested(0) | lengthSizeMinusOne(3 = 4-byte lengths)
+    hvcc[22] = 3;    // numOfArrays = 3
+
+    let pos = 23;
+
+    // Array 0: VPS (NAL type 32 = 0x20)
+    hvcc[pos++] = 0xa0; // completeness(1) | NAL_unit_type(32)
+    hvcc[pos++] = 0;
+    hvcc[pos++] = 1; // numNalus = 1
+    hvcc[pos++] = (vps.length >> 8) & 0xff;
+    hvcc[pos++] = vps.length & 0xff;
+    hvcc.set(vps, pos);
+    pos += vps.length;
+
+    // Array 1: SPS (NAL type 33 = 0x21)
+    hvcc[pos++] = 0xa1; // completeness(1) | NAL_unit_type(33)
+    hvcc[pos++] = 0;
+    hvcc[pos++] = 1; // numNalus = 1
+    hvcc[pos++] = (sps.length >> 8) & 0xff;
+    hvcc[pos++] = sps.length & 0xff;
+    hvcc.set(sps, pos);
+    pos += sps.length;
+
+    // Array 2: PPS (NAL type 34 = 0x22)
+    hvcc[pos++] = 0xa2; // completeness(1) | NAL_unit_type(34)
+    hvcc[pos++] = 0;
+    hvcc[pos++] = 1; // numNalus = 1
+    hvcc[pos++] = (pps.length >> 8) & 0xff;
+    hvcc[pos++] = pps.length & 0xff;
+    hvcc.set(pps, pos);
+    pos += pps.length;
+
+    return hvcc;
+  }
+
+  function annexBToHvcc(bytes) {
+    const nals = extractAnnexBNals(bytes);
+    if (nals.length === 0) return { data: bytes, isKey: false };
+    let totalLen = 0;
+    for (const n of nals) totalLen += 4 + n.length;
+    const out = new Uint8Array(totalLen);
+    const view = new DataView(out.buffer);
+    let pos = 0;
+    let isKey = false;
+    for (const n of nals) {
+      view.setUint32(pos, n.length, false);
+      out.set(n, pos + 4);
+      pos += 4 + n.length;
+      if (n.length >= 2) {
+        const nalType = (n[0] >> 1) & 0x3f;
+        if (nalType >= 16 && nalType <= 21) isKey = true; // IRAP keyframe
+      }
+    }
+    return { data: out, isKey };
+  }
+
+  async function getSupportedHevcDecoderCodec(desc) {
+    let suggested = 'hvc1.1.6.L120.B0';
+    if (desc && desc.length >= 13 && desc[0] === 1) {
+      const profileIdc = desc[1] & 0x1f;
+      const tier = (desc[1] >> 5) & 1 ? 'H' : 'L';
+      const level = desc[12] || 120;
+      suggested = `hvc1.${profileIdc}.6.${tier}${level}.B0`;
+    }
+    const candidates = [
+      suggested,
+      'hvc1.1.6.L123.B0',
+      'hvc1.1.6.L120.B0',
+      'hvc1.1.6.L93.B0',
+      'hev1.1.6.L123.B0',
+      'hev1.1.6.L120.B0',
+      'hev1.1.6.L93.B0'
+    ];
+    if (typeof VideoDecoder !== 'undefined' && typeof VideoDecoder.isConfigSupported === 'function') {
+      for (const c of candidates) {
+        try {
+          const res = await VideoDecoder.isConfigSupported({ codec: c });
+          if (res && res.supported) return c;
+        } catch (_) {}
+      }
+      return null;
+    }
+    return null;
+  }
+
   function extractPackedI420(frame) {
     if (!frame || !frame.data) return null;
     const w = frame.width;
@@ -1184,13 +1292,14 @@
     // Decoding Strategy:
     let useHardwareDecoder = isModernCodec && typeof VideoDecoder !== 'undefined';
     let spsInfo = null;
-    let avccDesc = null;
-    const isAvcc = !!(cp.extradata && cp.extradata.length > 0 && cp.extradata[0] === 1);
+    let decoderDesc = null;
+    const isAvcc = vStream.codec_id === CODEC_IDS.H264 && !!(cp.extradata && cp.extradata.length > 0 && cp.extradata[0] === 1);
+    const isHvcc = vStream.codec_id === CODEC_IDS.HEVC && !!(cp.extradata && cp.extradata.length > 22 && cp.extradata[0] === 1);
 
     if (useHardwareDecoder && vStream.codec_id === CODEC_IDS.H264) {
       // Parse SPS/PPS for AVC
       if (isAvcc) {
-        avccDesc = cp.extradata;
+        decoderDesc = cp.extradata;
       } else if (cp.extradata && cp.extradata.length > 0) {
         const nals = extractAnnexBNals(cp.extradata);
         let sps = null, pps = null;
@@ -1201,10 +1310,10 @@
         }
         if (sps && pps) {
           spsInfo = parseSpsInfo(sps);
-          avccDesc = createAvcC(sps, pps);
+          decoderDesc = createAvcC(sps, pps);
         }
       }
-      if (!avccDesc) {
+      if (!decoderDesc) {
         // Try to find SPS/PPS in first video packets
         for (const vp of videoPackets.slice(0, 10)) {
           const nals = extractAnnexBNals(vp.data);
@@ -1216,7 +1325,41 @@
           }
           if (sps && pps) {
             spsInfo = parseSpsInfo(sps);
-            avccDesc = createAvcC(sps, pps);
+            decoderDesc = createAvcC(sps, pps);
+            break;
+          }
+        }
+      }
+    } else if (useHardwareDecoder && vStream.codec_id === CODEC_IDS.HEVC) {
+      // Parse VPS/SPS/PPS for HEVC (H.265)
+      if (isHvcc) {
+        decoderDesc = cp.extradata;
+      } else if (cp.extradata && cp.extradata.length > 0) {
+        const nals = extractAnnexBNals(cp.extradata);
+        let vps = null, sps = null, pps = null;
+        for (const n of nals) {
+          const t = (n[0] >> 1) & 0x3f;
+          if (t === 32 && !vps) vps = n;
+          if (t === 33 && !sps) sps = n;
+          if (t === 34 && !pps) pps = n;
+        }
+        if (vps && sps && pps) {
+          decoderDesc = createHvcC(vps, sps, pps);
+        }
+      }
+      if (!decoderDesc) {
+        // Search first video packets for in-band VPS/SPS/PPS
+        for (const vp of videoPackets.slice(0, 15)) {
+          const nals = extractAnnexBNals(vp.data);
+          let vps = null, sps = null, pps = null;
+          for (const n of nals) {
+            const t = (n[0] >> 1) & 0x3f;
+            if (t === 32 && !vps) vps = n;
+            if (t === 33 && !sps) sps = n;
+            if (t === 34 && !pps) pps = n;
+          }
+          if (vps && sps && pps) {
+            decoderDesc = createHvcC(vps, sps, pps);
             break;
           }
         }
@@ -1225,6 +1368,7 @@
 
     if (onProgress) onProgress({ progress: 25, phase: 'Decoding & filtering video' });
 
+    let activeDecCodec = null;
     if (useHardwareDecoder) {
       try {
         let decoderError = null;
@@ -1235,13 +1379,29 @@
           error: (e) => { decoderError = e; console.error('[VideoDecoder Error]', e); }
         });
 
-        const decCodec = (spsInfo && spsInfo.codec) ? spsInfo.codec : (vStream.codec_id === CODEC_IDS.HEVC ? 'hvc1.1.6.L93.B0' : 'avc1.4D401F');
+        if (vStream.codec_id === CODEC_IDS.H264) {
+          activeDecCodec = (spsInfo && spsInfo.codec) ? spsInfo.codec : 'avc1.4D401F';
+        } else if (vStream.codec_id === CODEC_IDS.HEVC) {
+          activeDecCodec = await getSupportedHevcDecoderCodec(decoderDesc);
+          if (!activeDecCodec) {
+            throw new Error('HEVC (H.265) video decoding is not supported by your current browser (Firefox does not support HEVC WebCodecs). Please use Microsoft Edge or Google Chrome to process this video.');
+          }
+        } else if (vStream.codec_id === CODEC_IDS.VP8) {
+          activeDecCodec = 'vp8';
+        } else if (vStream.codec_id === CODEC_IDS.VP9) {
+          activeDecCodec = 'vp09.00.10.08';
+        } else if (vStream.codec_id === CODEC_IDS.AV1) {
+          activeDecCodec = 'av01.0.04M.08';
+        } else {
+          activeDecCodec = 'avc1.4D401F';
+        }
+
         const decConfig = {
-          codec: decCodec,
+          codec: activeDecCodec,
           hardwareAcceleration: 'no-preference'
         };
-        if (avccDesc) {
-          decConfig.description = avccDesc;
+        if (decoderDesc) {
+          decConfig.description = decoderDesc;
         }
         await videoDecoder.configure(decConfig);
 
@@ -1275,12 +1435,21 @@
           }
 
           let chunkData = p.data;
-          let isKey = !!(p.flags & 1);
+          let isKey = (i === 0) || !!(p.flags & 1);
 
           if (!isAvcc && vStream.codec_id === CODEC_IDS.H264) {
             const avccChunk = annexBToAvcc(p.data);
             chunkData = avccChunk.data;
-            if (avccChunk.isKey) isKey = true;
+            if (avccChunk.isKey || i === 0) isKey = true;
+          } else if (!isHvcc && vStream.codec_id === CODEC_IDS.HEVC) {
+            const hvccChunk = annexBToHvcc(p.data);
+            chunkData = hvccChunk.data;
+            if (hvccChunk.isKey || i === 0) isKey = true;
+          } else if (isHvcc && vStream.codec_id === CODEC_IDS.HEVC) {
+            if (!isKey && chunkData.length >= 6) {
+              const nalType = (chunkData[4] >> 1) & 0x3f;
+              if (nalType >= 16 && nalType <= 21) isKey = true; // IRAP: BLA, IDR, CRA
+            }
           }
 
           const encChunk = new EncodedVideoChunk({
@@ -1300,8 +1469,13 @@
         videoDecoder.close();
       } catch (hwErr) {
         console.warn('[MediaWorker] Hardware VideoDecoder failed:', hwErr);
-        if ([CODEC_IDS.H264, CODEC_IDS.HEVC, CODEC_IDS.VP8, CODEC_IDS.VP9, CODEC_IDS.AV1].includes(vStream.codec_id)) {
-          throw new Error('Hardware VideoDecoder failed for ' + (spsInfo?.codec || 'AVC/HEVC') + ': ' + (hwErr.message || hwErr));
+        if (vStream.codec_id === CODEC_IDS.HEVC) {
+          const isFirefox = typeof navigator !== 'undefined' && /firefox/i.test(navigator.userAgent);
+          const hint = isFirefox ? ' (Firefox does not support HEVC WebCodecs. Please use Microsoft Edge or Google Chrome)' : '';
+          throw new Error(`Hardware VideoDecoder failed for HEVC (H.265)${hint}: ${hwErr.message || hwErr}`);
+        }
+        if ([CODEC_IDS.H264, CODEC_IDS.VP8, CODEC_IDS.VP9, CODEC_IDS.AV1].includes(vStream.codec_id)) {
+          throw new Error('Hardware VideoDecoder failed for ' + (activeDecCodec || spsInfo?.codec || 'AVC') + ': ' + (hwErr.message || hwErr));
         }
         useHardwareDecoder = false;
       }
