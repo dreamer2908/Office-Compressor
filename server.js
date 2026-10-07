@@ -73,11 +73,12 @@ const server = http.createServer((req, res) => {
 
   if (reqPath === '/' || reqPath === '') reqPath = '/index.html';
 
-  let filePath = path.join(BASE_DIR, reqPath);
+  const cleanPath = reqPath.replace(/^[/\\]+/, '');
+  let filePath = path.join(BASE_DIR, cleanPath);
 
   // Fallback to sample or tests directory if requested
   if (reqPath.startsWith('/samples/') || reqPath.startsWith('/tests/')) {
-    filePath = path.join(BASE_DIR, '..', reqPath);
+    filePath = path.join(BASE_DIR, '..', cleanPath);
   }
 
   fs.stat(filePath, (err, stats) => {

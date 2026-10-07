@@ -408,11 +408,16 @@
     const reader = new ExpGolombReader(sps.subarray(4));
     reader.readExpGolomb(); // seq_parameter_set_id
 
+    let bitDepthLuma = 8;
+    let bitDepthChroma = 8;
+
     if ([100, 110, 122, 244, 44, 83, 86, 118, 128].includes(profile)) {
       const chroma = reader.readExpGolomb();
       if (chroma === 3) reader.readBit();
-      reader.readExpGolomb();
-      reader.readExpGolomb();
+      const bitDepthLumaMinus8 = reader.readExpGolomb();
+      const bitDepthChromaMinus8 = reader.readExpGolomb();
+      bitDepthLuma = 8 + bitDepthLumaMinus8;
+      bitDepthChroma = 8 + bitDepthChromaMinus8;
       reader.readBit();
       if (reader.readBit()) {
         const count = chroma !== 3 ? 8 : 12;
@@ -484,9 +489,14 @@
     if (sarW > 0 && sarH > 0) displayWidth = Math.round(codedWidth * (sarW / sarH));
     if (codedWidth === 1440 && (codedHeight >= 1070 && codedHeight <= 1090)) displayWidth = 1920;
 
+    const bitDepth = Math.max(bitDepthLuma, bitDepthChroma);
+
     return {
       profile,
       level,
+      bitDepth,
+      bitDepthLuma,
+      bitDepthChroma,
       codedWidth,
       codedHeight,
       displayWidth,
@@ -693,22 +703,71 @@
   }
 
   async function getSupportedHevcDecoderCodec(desc) {
-    let suggested = 'hvc1.1.6.L120.B0';
+    let profileIdc = 1;
+    let tier = 'L';
+    let level = 120;
     if (desc && desc.length >= 13 && desc[0] === 1) {
-      const profileIdc = desc[1] & 0x1f;
-      const tier = (desc[1] >> 5) & 1 ? 'H' : 'L';
-      const level = desc[12] || 120;
-      suggested = `hvc1.${profileIdc}.6.${tier}${level}.B0`;
+      profileIdc = desc[1] & 0x1f;
+      tier = (desc[1] >> 5) & 1 ? 'H' : 'L';
+      level = desc[12] || 120;
     }
+    const suggested = `hvc1.${profileIdc}.6.${tier}${level}.B0`;
     const candidates = [
       suggested,
-      'hvc1.1.6.L123.B0',
-      'hvc1.1.6.L120.B0',
-      'hvc1.1.6.L93.B0',
-      'hev1.1.6.L123.B0',
-      'hev1.1.6.L120.B0',
-      'hev1.1.6.L93.B0'
+      ...(profileIdc === 2 ? [
+        'hvc1.2.4.L120.B0',
+        'hvc1.2.4.L123.B0',
+        'hvc1.2.4.L93.B0',
+        'hev1.2.4.L120.B0',
+        'hev1.2.4.L123.B0',
+        'hev1.2.4.L93.B0'
+      ] : [
+        'hvc1.1.6.L120.B0',
+        'hvc1.1.6.L123.B0',
+        'hvc1.1.6.L93.B0',
+        'hev1.1.6.L120.B0',
+        'hev1.1.6.L123.B0',
+        'hev1.1.6.L93.B0'
+      ])
     ];
+
+    if (typeof VideoDecoder !== 'undefined' && typeof VideoDecoder.isConfigSupported === 'function') {
+      for (const c of candidates) {
+        try {
+          const cfg = { codec: c };
+          if (desc) cfg.description = desc;
+          const res = await VideoDecoder.isConfigSupported(cfg);
+          if (res && res.supported) return c;
+        } catch (_) {}
+      }
+      for (const c of candidates) {
+        try {
+          const res = await VideoDecoder.isConfigSupported({ codec: c });
+          if (res && res.supported) return c;
+        } catch (_) {}
+      }
+    }
+    return null;
+  }
+
+  async function getSupportedVp9DecoderCodec(is10Bit) {
+    const candidates = is10Bit
+      ? [
+          'vp09.02.10.10',
+          'vp09.02.20.10',
+          'vp09.02.30.10',
+          'vp09.02.40.10',
+          'vp09.00.10.08',
+          'vp9'
+        ]
+      : [
+          'vp09.00.10.08',
+          'vp09.00.20.08',
+          'vp09.00.30.08',
+          'vp09.00.40.08',
+          'vp9'
+        ];
+
     if (typeof VideoDecoder !== 'undefined' && typeof VideoDecoder.isConfigSupported === 'function') {
       for (const c of candidates) {
         try {
@@ -716,7 +775,33 @@
           if (res && res.supported) return c;
         } catch (_) {}
       }
-      return null;
+    }
+    return null;
+  }
+
+  async function getSupportedAv1DecoderCodec(is10Bit) {
+    const candidates = is10Bit
+      ? [
+          'av01.0.04M.10',
+          'av01.0.05M.10',
+          'av01.0.08M.10',
+          'av01.0.04M.08',
+          'av01.0.05M.08'
+        ]
+      : [
+          'av01.0.04M.08',
+          'av01.0.05M.08',
+          'av01.0.08M.08',
+          'av01.0.04M.10'
+        ];
+
+    if (typeof VideoDecoder !== 'undefined' && typeof VideoDecoder.isConfigSupported === 'function') {
+      for (const c of candidates) {
+        try {
+          const res = await VideoDecoder.isConfigSupported({ codec: c });
+          if (res && res.supported) return c;
+        } catch (_) {}
+      }
     }
     return null;
   }
@@ -727,16 +812,52 @@
     const h = frame.height;
     if (!w || !h) return null;
 
-    if (Array.isArray(frame.data)) {
-      const yLen = w * h;
-      const uvLen = (w >> 1) * (h >> 1);
-      const buf = new Uint8Array(yLen + uvLen * 2);
-      buf.set(frame.data[0].subarray(0, yLen), 0);
-      buf.set(frame.data[1].subarray(0, uvLen), yLen);
-      buf.set(frame.data[2].subarray(0, uvLen), yLen + uvLen);
-      return buf;
+    const yLen = w * h;
+    const uvLen = (w >> 1) * (h >> 1);
+    const packed = new Uint8Array(yLen + uvLen * 2);
+
+    let shift = 0;
+    // FFmpeg pixel formats:
+    // 62: AV_PIX_FMT_YUV420P10LE, 64: AV_PIX_FMT_YUV422P10LE, 66: AV_PIX_FMT_YUV444P10LE
+    // 78: AV_PIX_FMT_YUV420P9LE,  70: AV_PIX_FMT_YUV420P12LE, 72: AV_PIX_FMT_YUV420P16LE
+    if (frame.format === 62 || frame.format === 64 || frame.format === 66 || frame.format === 78) {
+      shift = 2; // 10-bit -> 8-bit
+    } else if (frame.format === 70) {
+      shift = 4; // 12-bit -> 8-bit
+    } else if (frame.format === 72) {
+      shift = 8; // 16-bit -> 8-bit
     }
 
+    // Array of separate planes
+    if (Array.isArray(frame.data)) {
+      const is16Bit = shift > 0 || (frame.data[0] instanceof Uint16Array) || (frame.data[0].byteLength >= yLen * 2);
+      if (!is16Bit) {
+        packed.set(frame.data[0].subarray(0, yLen), 0);
+        packed.set(frame.data[1].subarray(0, uvLen), yLen);
+        packed.set(frame.data[2].subarray(0, uvLen), yLen + uvLen);
+        return packed;
+      }
+
+      const bitShift = shift || 2;
+      const getPlaneU16 = (p) => {
+        if (p instanceof Uint16Array) return p;
+        if (p.byteOffset % 2 === 0) {
+          return new Uint16Array(p.buffer, p.byteOffset, p.byteLength >> 1);
+        }
+        return new Uint16Array(p.slice().buffer);
+      };
+      const yPlane = getPlaneU16(frame.data[0]);
+      const uPlane = getPlaneU16(frame.data[1]);
+      const vPlane = getPlaneU16(frame.data[2]);
+
+      let dst = 0;
+      for (let i = 0; i < yLen; i++) packed[dst++] = Math.min(255, yPlane[i] >> bitShift);
+      for (let i = 0; i < uvLen; i++) packed[dst++] = Math.min(255, uPlane[i] >> bitShift);
+      for (let i = 0; i < uvLen; i++) packed[dst++] = Math.min(255, vPlane[i] >> bitShift);
+      return packed;
+    }
+
+    // Layout-based (single Uint8Array buffer with offsets & strides)
     if (frame.layout && frame.layout.length >= 3) {
       const yStride = frame.layout[0].stride;
       const yOffset = frame.layout[0].offset;
@@ -745,21 +866,62 @@
       const vStride = frame.layout[2].stride;
       const vOffset = frame.layout[2].offset;
 
-      const packed = new Uint8Array(w * h + (w >> 1) * (h >> 1) * 2);
+      const is16Bit = shift > 0 || (yStride >= w * 2);
+
+      if (!is16Bit) {
+        let dstOff = 0;
+        for (let r = 0; r < h; r++) {
+          packed.set(frame.data.subarray(yOffset + r * yStride, yOffset + r * yStride + w), dstOff);
+          dstOff += w;
+        }
+        const uvH = h >> 1;
+        const uvW = w >> 1;
+        for (let r = 0; r < uvH; r++) {
+          packed.set(frame.data.subarray(uOffset + r * uStride, uOffset + r * uStride + uvW), dstOff);
+          dstOff += uvW;
+        }
+        for (let r = 0; r < uvH; r++) {
+          packed.set(frame.data.subarray(vOffset + r * vStride, vOffset + r * vStride + uvW), dstOff);
+          dstOff += uvW;
+        }
+        return packed;
+      }
+
+      // 16-bit words (10-bit / 12-bit / 16-bit LE)
+      const bitShift = shift || 2;
+      let u16;
+      if (frame.data.byteOffset % 2 === 0) {
+        u16 = new Uint16Array(frame.data.buffer, frame.data.byteOffset, frame.data.byteLength >> 1);
+      } else {
+        u16 = new Uint16Array(frame.data.slice().buffer);
+      }
+      const yWordStride = yStride >> 1;
+      const yWordOffset = yOffset >> 1;
+      const uWordStride = uStride >> 1;
+      const uWordOffset = uOffset >> 1;
+      const vWordStride = vStride >> 1;
+      const vWordOffset = vOffset >> 1;
+
       let dstOff = 0;
       for (let r = 0; r < h; r++) {
-        packed.set(frame.data.subarray(yOffset + r * yStride, yOffset + r * yStride + w), dstOff);
-        dstOff += w;
+        const rowStart = yWordOffset + r * yWordStride;
+        for (let c = 0; c < w; c++) {
+          packed[dstOff++] = Math.min(255, u16[rowStart + c] >> bitShift);
+        }
       }
       const uvH = h >> 1;
       const uvW = w >> 1;
       for (let r = 0; r < uvH; r++) {
-        packed.set(frame.data.subarray(uOffset + r * uStride, uOffset + r * uStride + uvW), dstOff);
-        dstOff += uvW;
+        const rowStart = uWordOffset + r * uWordStride;
+        for (let c = 0; c < uvW; c++) {
+          packed[dstOff++] = Math.min(255, u16[rowStart + c] >> bitShift);
+        }
       }
       for (let r = 0; r < uvH; r++) {
-        packed.set(frame.data.subarray(vOffset + r * vStride, vOffset + r * vStride + uvW), dstOff);
-        dstOff += uvW;
+        const rowStart = vWordOffset + r * vWordStride;
+        for (let c = 0; c < uvW; c++) {
+          packed[dstOff++] = Math.min(255, u16[rowStart + c] >> bitShift);
+        }
       }
       return packed;
     }
@@ -1290,6 +1452,7 @@
     }
 
     // Decoding Strategy:
+    const hasSoftwareDecoder = !!(await libav.avcodec_find_decoder(vStream.codec_id));
     let useHardwareDecoder = isModernCodec && typeof VideoDecoder !== 'undefined';
     let spsInfo = null;
     let decoderDesc = null;
@@ -1370,6 +1533,86 @@
 
     let activeDecCodec = null;
     if (useHardwareDecoder) {
+      if (vStream.codec_id === CODEC_IDS.H264) {
+        const is10BitAvc = (spsInfo && (spsInfo.profile === 110 || spsInfo.bitDepth > 8)) || cp.format === 62;
+        if (is10BitAvc && hasSoftwareDecoder) {
+          console.log('[MediaWorker] 10-bit AVC (High 10) detected; hardware decoders do not support 10-bit AVC. Falling back to libav software decoder.');
+          useHardwareDecoder = false;
+        } else {
+          activeDecCodec = (spsInfo && spsInfo.codec) ? spsInfo.codec : 'avc1.4D401F';
+          if (typeof VideoDecoder !== 'undefined' && typeof VideoDecoder.isConfigSupported === 'function') {
+            let isSupported = false;
+            try {
+              const cfg = { codec: activeDecCodec };
+              if (decoderDesc) cfg.description = decoderDesc;
+              const res = await VideoDecoder.isConfigSupported(cfg);
+              if (res && res.supported) isSupported = true;
+            } catch (_) {}
+            if (!isSupported) {
+              try {
+                const res = await VideoDecoder.isConfigSupported({ codec: activeDecCodec });
+                if (res && res.supported) isSupported = true;
+              } catch (_) {}
+            }
+            if (!isSupported && hasSoftwareDecoder) {
+              console.log(`[MediaWorker] Hardware VideoDecoder does not support ${activeDecCodec}; falling back to libav software decoder.`);
+              useHardwareDecoder = false;
+            }
+          }
+        }
+      } else if (vStream.codec_id === CODEC_IDS.HEVC) {
+        activeDecCodec = await getSupportedHevcDecoderCodec(decoderDesc);
+        if (!activeDecCodec) {
+          if (hasSoftwareDecoder) {
+            console.log('[MediaWorker] HEVC hardware decoder not supported by browser (e.g. Firefox); falling back to libav software decoder.');
+            useHardwareDecoder = false;
+          } else {
+            const isFirefox = typeof navigator !== 'undefined' && /firefox/i.test(navigator.userAgent);
+            const hint = isFirefox ? ' (Firefox does not support HEVC WebCodecs. Please use Microsoft Edge or Google Chrome)' : '';
+            throw new Error(`HEVC (H.265) video decoding is not supported by your current browser${hint}.`);
+          }
+        }
+      } else if (vStream.codec_id === CODEC_IDS.VP8) {
+        activeDecCodec = 'vp8';
+        let isVp8Supported = false;
+        if (typeof VideoDecoder !== 'undefined' && typeof VideoDecoder.isConfigSupported === 'function') {
+          try {
+            const res = await VideoDecoder.isConfigSupported({ codec: 'vp8' });
+            if (res && res.supported) isVp8Supported = true;
+          } catch (_) {}
+        }
+        if (!isVp8Supported && hasSoftwareDecoder) {
+          console.log('[MediaWorker] VP8 hardware decoder not supported by browser; falling back to libav software decoder.');
+          useHardwareDecoder = false;
+        }
+      } else if (vStream.codec_id === CODEC_IDS.VP9) {
+        const is10Bit = cp.format === 62 || cp.profile === 2;
+        activeDecCodec = await getSupportedVp9DecoderCodec(is10Bit);
+        if (!activeDecCodec) {
+          if (hasSoftwareDecoder) {
+            console.log('[MediaWorker] VP9 hardware decoder not supported by browser; falling back to libav software decoder.');
+            useHardwareDecoder = false;
+          } else {
+            throw new Error('VP9 video decoding is not supported by your current browser.');
+          }
+        }
+      } else if (vStream.codec_id === CODEC_IDS.AV1) {
+        const is10Bit = cp.format === 62;
+        activeDecCodec = await getSupportedAv1DecoderCodec(is10Bit);
+        if (!activeDecCodec) {
+          if (hasSoftwareDecoder) {
+            console.log('[MediaWorker] AV1 hardware decoder not supported by browser; falling back to libav software decoder.');
+            useHardwareDecoder = false;
+          } else {
+            throw new Error('AV1 video decoding is not supported by your current browser.');
+          }
+        }
+      } else {
+        activeDecCodec = 'avc1.4D401F';
+      }
+    }
+
+    if (useHardwareDecoder) {
       try {
         let decoderError = null;
         const videoDecoder = new VideoDecoder({
@@ -1378,23 +1621,6 @@
           },
           error: (e) => { decoderError = e; console.error('[VideoDecoder Error]', e); }
         });
-
-        if (vStream.codec_id === CODEC_IDS.H264) {
-          activeDecCodec = (spsInfo && spsInfo.codec) ? spsInfo.codec : 'avc1.4D401F';
-        } else if (vStream.codec_id === CODEC_IDS.HEVC) {
-          activeDecCodec = await getSupportedHevcDecoderCodec(decoderDesc);
-          if (!activeDecCodec) {
-            throw new Error('HEVC (H.265) video decoding is not supported by your current browser (Firefox does not support HEVC WebCodecs). Please use Microsoft Edge or Google Chrome to process this video.');
-          }
-        } else if (vStream.codec_id === CODEC_IDS.VP8) {
-          activeDecCodec = 'vp8';
-        } else if (vStream.codec_id === CODEC_IDS.VP9) {
-          activeDecCodec = 'vp09.00.10.08';
-        } else if (vStream.codec_id === CODEC_IDS.AV1) {
-          activeDecCodec = 'av01.0.04M.08';
-        } else {
-          activeDecCodec = 'avc1.4D401F';
-        }
 
         const decConfig = {
           codec: activeDecCodec,
@@ -1469,20 +1695,45 @@
         videoDecoder.close();
       } catch (hwErr) {
         console.warn('[MediaWorker] Hardware VideoDecoder failed:', hwErr);
-        if (vStream.codec_id === CODEC_IDS.HEVC) {
-          const isFirefox = typeof navigator !== 'undefined' && /firefox/i.test(navigator.userAgent);
-          const hint = isFirefox ? ' (Firefox does not support HEVC WebCodecs. Please use Microsoft Edge or Google Chrome)' : '';
-          throw new Error(`Hardware VideoDecoder failed for HEVC (H.265)${hint}: ${hwErr.message || hwErr}`);
+        if (hasSoftwareDecoder) {
+          console.log('[MediaWorker] Falling back to libav software decoder after hardware decoder error.');
+          encodedVideoChunks.length = 0;
+          firstPtsUs = null;
+          lastEncodedTimestampUs = -Infinity;
+          lastEncodedPtsUs = -Infinity;
+          encodedFrameIndex = 0;
+          try {
+            videoEncoder.reset();
+            await videoEncoder.configure({
+              codec: finalCodecStr,
+              width: outW,
+              height: outH,
+              bitrate: bitrate,
+              framerate: targetFps,
+              hardwareAcceleration: 'no-preference',
+              avc: { format: 'avc' }
+            });
+          } catch (resetErr) {
+            console.error('[MediaWorker] Failed to reset videoEncoder during software fallback:', resetErr);
+            throw resetErr;
+          }
+          useHardwareDecoder = false;
+        } else {
+          if (vStream.codec_id === CODEC_IDS.HEVC) {
+            const isFirefox = typeof navigator !== 'undefined' && /firefox/i.test(navigator.userAgent);
+            const hint = isFirefox ? ' (Firefox does not support HEVC WebCodecs. Please use Microsoft Edge or Google Chrome)' : '';
+            throw new Error(`Hardware VideoDecoder failed for HEVC (H.265)${hint}: ${hwErr.message || hwErr}`);
+          }
+          if ([CODEC_IDS.H264, CODEC_IDS.VP8, CODEC_IDS.VP9, CODEC_IDS.AV1].includes(vStream.codec_id)) {
+            throw new Error('Hardware VideoDecoder failed for ' + (activeDecCodec || spsInfo?.codec || 'AVC') + ': ' + (hwErr.message || hwErr));
+          }
+          useHardwareDecoder = false;
         }
-        if ([CODEC_IDS.H264, CODEC_IDS.VP8, CODEC_IDS.VP9, CODEC_IDS.AV1].includes(vStream.codec_id)) {
-          throw new Error('Hardware VideoDecoder failed for ' + (activeDecCodec || spsInfo?.codec || 'AVC') + ': ' + (hwErr.message || hwErr));
-        }
-        useHardwareDecoder = false;
       }
     }
 
     if (!useHardwareDecoder) {
-      // LibAV Software Decoder Path (for WMV1, MPEG-4, MJPEG, or hardware fallback)
+      // LibAV Software Decoder Path (for WMV, MPEG-4, MJPEG, or hardware fallback)
       const [dec_codec, c_dec, dec_pkt, dec_frame] = await libav.ff_init_decoder(vStream.codec_id, {
         codecpar: vStream.codecpar
       });
@@ -1527,6 +1778,35 @@
           const pct = Math.min(75, 25 + Math.round((i / totalPkts) * 50));
           onProgress({ progress: pct, phase: 'Software decoding & transcoding frames' });
         }
+      }
+
+      // Flush remaining buffered frames from software decoder
+      try {
+        const flushedFrames = await libav.ff_decode_multi(c_dec, dec_pkt, dec_frame, [], { fin: true });
+        for (const f of flushedFrames) {
+          let ptsUs = 0;
+          if (hasValidPts && f.pts !== undefined && f.pts !== null) {
+            ptsUs = Math.round((f.pts * tbNum / tbDen) * 1e6);
+          } else if (hasValidDts && f.pkt_dts !== undefined && f.pkt_dts !== null) {
+            ptsUs = Math.round((f.pkt_dts * tbNum / tbDen) * 1e6);
+          } else {
+            ptsUs = Math.round((softwareDecodedCount / origFps) * 1e6);
+          }
+          softwareDecodedCount++;
+
+          const i420Data = extractPackedI420(f);
+          if (i420Data) {
+            const vf = new VideoFrame(i420Data, {
+              format: 'I420',
+              codedWidth: f.width,
+              codedHeight: f.height,
+              timestamp: ptsUs
+            });
+            processAndEncodeFrame(vf);
+          }
+        }
+      } catch (flushErr) {
+        console.warn('[MediaWorker] Soft decoder flush warning:', flushErr);
       }
 
       await libav.ff_free_decoder(c_dec, dec_pkt, dec_frame);
