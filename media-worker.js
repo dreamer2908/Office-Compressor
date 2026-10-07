@@ -497,6 +497,8 @@
       bitDepth,
       bitDepthLuma,
       bitDepthChroma,
+      frameMbsOnlyFlag,
+      isInterlaced: frameMbsOnlyFlag === 0,
       codedWidth,
       codedHeight,
       displayWidth,
@@ -806,15 +808,22 @@
     return null;
   }
 
-  function extractPackedI420(frame) {
+  function extractPackedI420(frame, options = {}) {
     if (!frame || !frame.data) return null;
     const w = frame.width;
     const h = frame.height;
     if (!w || !h) return null;
 
-    const yLen = w * h;
-    const uvLen = (w >> 1) * (h >> 1);
+    const discardOddFields = !!options.discardOddFields;
+    const effH = discardOddFields ? ((Math.floor(h / 2) >> 1) << 1) : h;
+    const effUvH = effH >> 1;
+    const uvW = w >> 1;
+
+    const yLen = w * effH;
+    const uvLen = uvW * effUvH;
     const packed = new Uint8Array(yLen + uvLen * 2);
+    packed.width = w;
+    packed.height = effH;
 
     let shift = 0;
     // FFmpeg pixel formats:
@@ -830,8 +839,31 @@
 
     // Array of separate planes
     if (Array.isArray(frame.data)) {
-      const is16Bit = shift > 0 || (frame.data[0] instanceof Uint16Array) || (frame.data[0].byteLength >= yLen * 2);
+      const is16Bit = shift > 0 || (frame.data[0] instanceof Uint16Array) || (frame.data[0].byteLength >= w * h * 2);
       if (!is16Bit) {
+        if (discardOddFields) {
+          let dst = 0;
+          const ySrc = frame.data[0];
+          for (let r = 0; r < effH; r++) {
+            const srcOff = (r * 2) * w;
+            packed.set(ySrc.subarray(srcOff, srcOff + w), dst);
+            dst += w;
+          }
+          const uSrc = frame.data[1];
+          for (let r = 0; r < effUvH; r++) {
+            const srcOff = (r * 2) * uvW;
+            packed.set(uSrc.subarray(srcOff, srcOff + uvW), dst);
+            dst += uvW;
+          }
+          const vSrc = frame.data[2];
+          for (let r = 0; r < effUvH; r++) {
+            const srcOff = (r * 2) * uvW;
+            packed.set(vSrc.subarray(srcOff, srcOff + uvW), dst);
+            dst += uvW;
+          }
+          return packed;
+        }
+
         packed.set(frame.data[0].subarray(0, yLen), 0);
         packed.set(frame.data[1].subarray(0, uvLen), yLen);
         packed.set(frame.data[2].subarray(0, uvLen), yLen + uvLen);
@@ -851,6 +883,22 @@
       const vPlane = getPlaneU16(frame.data[2]);
 
       let dst = 0;
+      if (discardOddFields) {
+        for (let r = 0; r < effH; r++) {
+          const rowStart = (r * 2) * w;
+          for (let c = 0; c < w; c++) packed[dst++] = Math.min(255, yPlane[rowStart + c] >> bitShift);
+        }
+        for (let r = 0; r < effUvH; r++) {
+          const rowStart = (r * 2) * uvW;
+          for (let c = 0; c < uvW; c++) packed[dst++] = Math.min(255, uPlane[rowStart + c] >> bitShift);
+        }
+        for (let r = 0; r < effUvH; r++) {
+          const rowStart = (r * 2) * uvW;
+          for (let c = 0; c < uvW; c++) packed[dst++] = Math.min(255, vPlane[rowStart + c] >> bitShift);
+        }
+        return packed;
+      }
+
       for (let i = 0; i < yLen; i++) packed[dst++] = Math.min(255, yPlane[i] >> bitShift);
       for (let i = 0; i < uvLen; i++) packed[dst++] = Math.min(255, uPlane[i] >> bitShift);
       for (let i = 0; i < uvLen; i++) packed[dst++] = Math.min(255, vPlane[i] >> bitShift);
@@ -870,17 +918,34 @@
 
       if (!is16Bit) {
         let dstOff = 0;
+        if (discardOddFields) {
+          for (let r = 0; r < effH; r++) {
+            const srcOff = yOffset + (r * 2) * yStride;
+            packed.set(frame.data.subarray(srcOff, srcOff + w), dstOff);
+            dstOff += w;
+          }
+          for (let r = 0; r < effUvH; r++) {
+            const srcOff = uOffset + (r * 2) * uStride;
+            packed.set(frame.data.subarray(srcOff, srcOff + uvW), dstOff);
+            dstOff += uvW;
+          }
+          for (let r = 0; r < effUvH; r++) {
+            const srcOff = vOffset + (r * 2) * vStride;
+            packed.set(frame.data.subarray(srcOff, srcOff + uvW), dstOff);
+            dstOff += uvW;
+          }
+          return packed;
+        }
+
         for (let r = 0; r < h; r++) {
           packed.set(frame.data.subarray(yOffset + r * yStride, yOffset + r * yStride + w), dstOff);
           dstOff += w;
         }
-        const uvH = h >> 1;
-        const uvW = w >> 1;
-        for (let r = 0; r < uvH; r++) {
+        for (let r = 0; r < effUvH; r++) {
           packed.set(frame.data.subarray(uOffset + r * uStride, uOffset + r * uStride + uvW), dstOff);
           dstOff += uvW;
         }
-        for (let r = 0; r < uvH; r++) {
+        for (let r = 0; r < effUvH; r++) {
           packed.set(frame.data.subarray(vOffset + r * vStride, vOffset + r * vStride + uvW), dstOff);
           dstOff += uvW;
         }
@@ -903,21 +968,41 @@
       const vWordOffset = vOffset >> 1;
 
       let dstOff = 0;
+      if (discardOddFields) {
+        for (let r = 0; r < effH; r++) {
+          const rowStart = yWordOffset + (r * 2) * yWordStride;
+          for (let c = 0; c < w; c++) {
+            packed[dstOff++] = Math.min(255, u16[rowStart + c] >> bitShift);
+          }
+        }
+        for (let r = 0; r < effUvH; r++) {
+          const rowStart = uWordOffset + (r * 2) * uWordStride;
+          for (let c = 0; c < uvW; c++) {
+            packed[dstOff++] = Math.min(255, u16[rowStart + c] >> bitShift);
+          }
+        }
+        for (let r = 0; r < effUvH; r++) {
+          const rowStart = vWordOffset + (r * 2) * vWordStride;
+          for (let c = 0; c < uvW; c++) {
+            packed[dstOff++] = Math.min(255, u16[rowStart + c] >> bitShift);
+          }
+        }
+        return packed;
+      }
+
       for (let r = 0; r < h; r++) {
         const rowStart = yWordOffset + r * yWordStride;
         for (let c = 0; c < w; c++) {
           packed[dstOff++] = Math.min(255, u16[rowStart + c] >> bitShift);
         }
       }
-      const uvH = h >> 1;
-      const uvW = w >> 1;
-      for (let r = 0; r < uvH; r++) {
+      for (let r = 0; r < effUvH; r++) {
         const rowStart = uWordOffset + r * uWordStride;
         for (let c = 0; c < uvW; c++) {
           packed[dstOff++] = Math.min(255, u16[rowStart + c] >> bitShift);
         }
       }
-      for (let r = 0; r < uvH; r++) {
+      for (let r = 0; r < effUvH; r++) {
         const rowStart = vWordOffset + r * vWordStride;
         for (let c = 0; c < uvW; c++) {
           packed[dstOff++] = Math.min(255, u16[rowStart + c] >> bitShift);
@@ -927,6 +1012,169 @@
     }
 
     return null;
+  }
+
+  // --- Interlaced Video: Field Discard Renderer ---
+
+  class FieldDiscardRenderer {
+    constructor(outW, outH) {
+      this.outW = outW;
+      this.outH = outH;
+      this.canvas = new OffscreenCanvas(outW, outH);
+      this.useWebGL = false;
+      try {
+        const gl = this.canvas.getContext('webgl', { premultipliedAlpha: false, alpha: false });
+        if (gl) {
+          this.gl = gl;
+          this.initGL();
+          this.useWebGL = true;
+        }
+      } catch (e) {
+        this.useWebGL = false;
+      }
+
+      if (!this.useWebGL) {
+        this.ctx = this.canvas.getContext('2d');
+        this.tempCanvas = null;
+        this.tempCtx = null;
+        this.halfCanvas = null;
+        this.halfCtx = null;
+        this.dstPixels = null;
+      }
+    }
+
+    initGL() {
+      const gl = this.gl;
+      const vsSource = `
+        attribute vec2 a_pos;
+        varying vec2 v_texCoord;
+        void main() {
+          gl_Position = vec4(a_pos, 0.0, 1.0);
+          v_texCoord = vec2((a_pos.x + 1.0) * 0.5, (1.0 - a_pos.y) * 0.5);
+        }
+      `;
+      const fsSource = `
+        precision mediump float;
+        uniform sampler2D u_image;
+        varying vec2 v_texCoord;
+        uniform float u_srcH;
+        void main() {
+          float halfH = floor(u_srcH * 0.5);
+          float line = min(floor(v_texCoord.y * halfH), halfH - 1.0);
+          float sampleY = (line * 2.0 + 0.5) / u_srcH;
+          gl_FragColor = texture2D(u_image, vec2(v_texCoord.x, sampleY));
+        }
+      `;
+
+      function createShader(gl, type, source) {
+        const shader = gl.createShader(type);
+        gl.shaderSource(shader, source);
+        gl.compileShader(shader);
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+          throw new Error(gl.getShaderInfoLog(shader));
+        }
+        return shader;
+      }
+
+      this.vs = createShader(gl, gl.VERTEX_SHADER, vsSource);
+      this.fs = createShader(gl, gl.FRAGMENT_SHADER, fsSource);
+      const prog = gl.createProgram();
+      gl.attachShader(prog, this.vs);
+      gl.attachShader(prog, this.fs);
+      gl.linkProgram(prog);
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+        throw new Error(gl.getProgramInfoLog(prog));
+      }
+      this.prog = prog;
+
+      this.aPosLoc = gl.getAttribLocation(prog, 'a_pos');
+      this.uImageLoc = gl.getUniformLocation(prog, 'u_image');
+      this.uSrcHLoc = gl.getUniformLocation(prog, 'u_srcH');
+
+      const posBuf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+        -1, -1,
+         1, -1,
+        -1,  1,
+         1,  1
+      ]), gl.STATIC_DRAW);
+      this.posBuf = posBuf;
+
+      const texture = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      this.texture = texture;
+    }
+
+    render(frame) {
+      if (this.useWebGL) {
+        try {
+          const gl = this.gl;
+          const srcH = frame.codedHeight || frame.displayHeight || 1080;
+          gl.viewport(0, 0, this.outW, this.outH);
+          gl.useProgram(this.prog);
+
+          gl.bindBuffer(gl.ARRAY_BUFFER, this.posBuf);
+          gl.enableVertexAttribArray(this.aPosLoc);
+          gl.vertexAttribPointer(this.aPosLoc, 2, gl.FLOAT, false, 0, 0);
+
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, this.texture);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, frame);
+          gl.uniform1i(this.uImageLoc, 0);
+          gl.uniform1f(this.uSrcHLoc, srcH);
+
+          gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+          return this.canvas;
+        } catch (glErr) {
+          console.warn('[MediaWorker] WebGL render error, falling back to 2D:', glErr);
+          this.useWebGL = false;
+          this.canvas = new OffscreenCanvas(this.outW, this.outH);
+          this.ctx = this.canvas.getContext('2d');
+        }
+      }
+
+      // 2D Canvas CPU Fallback
+      const w = frame.codedWidth || frame.displayWidth || this.outW;
+      const h = frame.codedHeight || frame.displayHeight || this.outH;
+      const halfH = Math.max(1, h >> 1);
+      if (!this.tempCanvas || this.tempCanvas.width !== w || this.tempCanvas.height !== h) {
+        this.tempCanvas = new OffscreenCanvas(w, h);
+        this.tempCtx = this.tempCanvas.getContext('2d', { willReadFrequently: true });
+        this.halfCanvas = new OffscreenCanvas(w, halfH);
+        this.halfCtx = this.halfCanvas.getContext('2d');
+        this.dstPixels = new Uint32Array(w * halfH);
+      }
+      this.tempCtx.drawImage(frame, 0, 0, w, h);
+      const imgData = this.tempCtx.getImageData(0, 0, w, h);
+      const src32 = new Uint32Array(imgData.data.buffer);
+      const dst32 = this.dstPixels;
+      for (let r = 0; r < halfH; r++) {
+        const srcOff = (r * 2) * w;
+        dst32.set(src32.subarray(srcOff, srcOff + w), r * w);
+      }
+      const fieldImgData = new ImageData(new Uint8ClampedArray(dst32.buffer), w, halfH);
+      this.halfCtx.putImageData(fieldImgData, 0, 0);
+      this.ctx.drawImage(this.halfCanvas, 0, 0, this.outW, this.outH);
+      return this.canvas;
+    }
+
+    destroy() {
+      if (this.useWebGL && this.gl) {
+        try {
+          const gl = this.gl;
+          if (this.texture) gl.deleteTexture(this.texture);
+          if (this.posBuf) gl.deleteBuffer(this.posBuf);
+          if (this.prog) gl.deleteProgram(this.prog);
+          if (this.vs) gl.deleteShader(this.vs);
+          if (this.fs) gl.deleteShader(this.fs);
+        } catch (_) {}
+      }
+    }
   }
 
   // --- Audio DSP & Downmixing Helpers ---
@@ -1416,13 +1664,16 @@
     const canvas = new OffscreenCanvas(outW, outH);
     const ctx = canvas.getContext('2d');
 
+    let deinterlaceMode = 'none';
+    let fieldRenderer = null;
+
     const minIntervalUs = Math.round(1000000 / targetFps);
     let firstPtsUs = null;
     let lastEncodedTimestampUs = -Infinity;
     let lastEncodedPtsUs = -Infinity;
     let encodedFrameIndex = 0;
 
-    function processAndEncodeFrame(frame) {
+    function processAndEncodeFrame(frame, isHardware = false) {
       const ptsUs = Math.round(frame.timestamp);
       if (firstPtsUs === null) firstPtsUs = ptsUs;
 
@@ -1430,7 +1681,12 @@
         frame.close();
         return;
       }
-      ctx.drawImage(frame, 0, 0, outW, outH);
+
+      let renderSource = frame;
+      if (isHardware && deinterlaceMode === 'discard_fields' && fieldRenderer) {
+        renderSource = fieldRenderer.render(frame);
+      }
+      ctx.drawImage(renderSource, 0, 0, outW, outH);
       frame.close();
 
       let outTimestampUs = ptsUs - firstPtsUs;
@@ -1453,13 +1709,13 @@
 
     // Decoding Strategy:
     const hasSoftwareDecoder = !!(await libav.avcodec_find_decoder(vStream.codec_id));
-    let useHardwareDecoder = isModernCodec && typeof VideoDecoder !== 'undefined';
+    let useHardwareDecoder = isModernCodec && typeof VideoDecoder !== 'undefined' && !options.forceSoftwareDecoder && !options.disableHardwareDecoder;
     let spsInfo = null;
     let decoderDesc = null;
     const isAvcc = vStream.codec_id === CODEC_IDS.H264 && !!(cp.extradata && cp.extradata.length > 0 && cp.extradata[0] === 1);
     const isHvcc = vStream.codec_id === CODEC_IDS.HEVC && !!(cp.extradata && cp.extradata.length > 22 && cp.extradata[0] === 1);
 
-    if (useHardwareDecoder && vStream.codec_id === CODEC_IDS.H264) {
+    if (vStream.codec_id === CODEC_IDS.H264) {
       // Parse SPS/PPS for AVC
       if (isAvcc) {
         decoderDesc = cp.extradata;
@@ -1476,7 +1732,7 @@
           decoderDesc = createAvcC(sps, pps);
         }
       }
-      if (!decoderDesc) {
+      if (!decoderDesc || !spsInfo) {
         // Try to find SPS/PPS in first video packets
         for (const vp of videoPackets.slice(0, 10)) {
           const nals = extractAnnexBNals(vp.data);
@@ -1486,14 +1742,14 @@
             if (t === 7 && !sps) sps = n;
             if (t === 8 && !pps) pps = n;
           }
-          if (sps && pps) {
-            spsInfo = parseSpsInfo(sps);
-            decoderDesc = createAvcC(sps, pps);
-            break;
+          if (sps) {
+            if (!spsInfo) spsInfo = parseSpsInfo(sps);
+            if (pps && !decoderDesc) decoderDesc = createAvcC(sps, pps);
+            if (decoderDesc && spsInfo) break;
           }
         }
       }
-    } else if (useHardwareDecoder && vStream.codec_id === CODEC_IDS.HEVC) {
+    } else if (vStream.codec_id === CODEC_IDS.HEVC) {
       // Parse VPS/SPS/PPS for HEVC (H.265)
       if (isHvcc) {
         decoderDesc = cp.extradata;
@@ -1612,12 +1868,40 @@
       }
     }
 
+    // Interlaced Video Handling
+    const isInterlacedSource = !!(
+      (spsInfo && spsInfo.isInterlaced) ||
+      (cp.field_order && cp.field_order >= 2) ||
+      (vStream.codecpar && vStream.codecpar.field_order >= 2)
+    );
+    const isSignificantResDifference = (outH <= Math.round(codedH * 0.75)) || (outW <= Math.round(displayW * 0.75));
+
+    if (isInterlacedSource) {
+      if (useHardwareDecoder || isSignificantResDifference) {
+        deinterlaceMode = 'discard_fields';
+      } else {
+        const hasYadif = !!(await libav.avfilter_get_by_name("yadif"));
+        const hasBwdif = !hasYadif && !!(await libav.avfilter_get_by_name("bwdif"));
+        if (hasYadif || hasBwdif) {
+          deinterlaceMode = hasYadif ? 'yadif' : 'bwdif';
+        } else {
+          console.warn('[MediaWorker] Quality deinterlacer filter (yadif) is not compiled into the current libavjs build. Falling back to field discarding.');
+          deinterlaceMode = 'discard_fields';
+        }
+      }
+      console.log(`[MediaWorker] Interlaced source detected. Deinterlace mode: ${deinterlaceMode} (HW: ${useHardwareDecoder}, ResDiff: ${isSignificantResDifference})`);
+    }
+
+    if (deinterlaceMode === 'discard_fields') {
+      fieldRenderer = new FieldDiscardRenderer(outW, outH);
+    }
+
     if (useHardwareDecoder) {
       try {
         let decoderError = null;
         const videoDecoder = new VideoDecoder({
           output: (frame) => {
-            processAndEncodeFrame(frame);
+            processAndEncodeFrame(frame, true);
           },
           error: (e) => { decoderError = e; console.error('[VideoDecoder Error]', e); }
         });
@@ -1718,6 +2002,21 @@
             throw resetErr;
           }
           useHardwareDecoder = false;
+          if (isInterlacedSource) {
+            if (isSignificantResDifference) {
+              deinterlaceMode = 'discard_fields';
+            } else {
+              const hasYadif = !!(await libav.avfilter_get_by_name("yadif"));
+              const hasBwdif = !hasYadif && !!(await libav.avfilter_get_by_name("bwdif"));
+              if (hasYadif || hasBwdif) {
+                deinterlaceMode = hasYadif ? 'yadif' : 'bwdif';
+              } else {
+                console.warn('[MediaWorker] Quality deinterlacer filter (yadif) is not compiled into the current libavjs build. Falling back to field discarding.');
+                deinterlaceMode = 'discard_fields';
+              }
+            }
+            console.log(`[MediaWorker] Software fallback deinterlace mode: ${deinterlaceMode}`);
+          }
         } else {
           if (vStream.codec_id === CODEC_IDS.HEVC) {
             const isFirefox = typeof navigator !== 'undefined' && /firefox/i.test(navigator.userAgent);
@@ -1738,6 +2037,38 @@
         codecpar: vStream.codecpar
       });
 
+      let filterGraphInfo = null;
+      if (deinterlaceMode === 'yadif' || deinterlaceMode === 'bwdif') {
+        try {
+          const fg = await libav.avfilter_graph_alloc();
+          const bsrc = await libav.avfilter_get_by_name("buffer");
+          const filterName = (deinterlaceMode === 'yadif') ? "yadif" : "bwdif";
+          const deintFilter = await libav.avfilter_get_by_name(filterName);
+          const bsink = await libav.avfilter_get_by_name("buffersink");
+
+          const pixFmt = cp.format !== undefined ? cp.format : 0;
+          const tbNum = vStream.time_base_num || 1;
+          const tbDen = vStream.time_base_den || 90000;
+          const srcArgs = `time_base=${tbNum}/${tbDen}:frame_rate=${origFps}:pix_fmt=${pixFmt}:width=${codedW}:height=${codedH}`;
+
+          const srcCtx = await libav.avfilter_graph_create_filter_js(bsrc, "in", srcArgs, 0, fg);
+          const deintCtx = await libav.avfilter_graph_create_filter_js(deintFilter, filterName, "0:-1:0", 0, fg);
+          const sinkCtx = await libav.avfilter_graph_create_filter_js(bsink, "out", null, 0, fg);
+
+          await libav.avfilter_link(srcCtx, 0, deintCtx, 0);
+          await libav.avfilter_link(deintCtx, 0, sinkCtx, 0);
+
+          const cfgRet = await libav.avfilter_graph_config(fg, 0);
+          if (cfgRet < 0) throw new Error("avfilter_graph_config returned " + cfgRet);
+
+          filterGraphInfo = { filter_graph: fg, src_ctx: srcCtx, sink_ctx: sinkCtx };
+          console.log(`[MediaWorker] Initialized avfilter quality deinterlacer: ${deinterlaceMode}`);
+        } catch (fgErr) {
+          console.warn('[MediaWorker] Failed to initialize avfilter graph for deinterlacing:', fgErr);
+          deinterlaceMode = 'discard_fields';
+        }
+      }
+
       const totalPkts = videoPackets.length;
       const tbNum = vStream.time_base_num || 1;
       const tbDen = vStream.time_base_den || 90000;
@@ -1749,28 +2080,36 @@
           await new Promise(r => setTimeout(r, 8));
         }
         const batch = videoPackets.slice(i, i + 20);
-        const frames = await libav.ff_decode_multi(c_dec, dec_pkt, dec_frame, batch);
+        let frames;
+        if (filterGraphInfo) {
+          frames = await libav.ff_decode_filter_multi(c_dec, filterGraphInfo.src_ctx, filterGraphInfo.sink_ctx, dec_pkt, dec_frame, batch);
+        } else {
+          frames = await libav.ff_decode_multi(c_dec, dec_pkt, dec_frame, batch);
+        }
 
         for (const f of frames) {
           let ptsUs = 0;
+          const fTbNum = (f.time_base_num && f.time_base_den) ? f.time_base_num : tbNum;
+          const fTbDen = (f.time_base_num && f.time_base_den) ? f.time_base_den : tbDen;
           if (hasValidPts && f.pts !== undefined && f.pts !== null && (f.pts !== 0 || softwareDecodedCount === 0)) {
-            ptsUs = Math.round((f.pts * tbNum / tbDen) * 1e6);
+            ptsUs = Math.round((f.pts * fTbNum / fTbDen) * 1e6);
           } else if (hasValidDts && f.pkt_dts !== undefined && f.pkt_dts !== null) {
-            ptsUs = Math.round((f.pkt_dts * tbNum / tbDen) * 1e6);
+            ptsUs = Math.round((f.pkt_dts * fTbNum / fTbDen) * 1e6);
           } else {
             ptsUs = Math.round((softwareDecodedCount / origFps) * 1e6);
           }
           softwareDecodedCount++;
 
-          const i420Data = extractPackedI420(f);
+          const discardOdd = (deinterlaceMode === 'discard_fields');
+          const i420Data = extractPackedI420(f, { discardOddFields: discardOdd });
           if (i420Data) {
             const vf = new VideoFrame(i420Data, {
               format: 'I420',
-              codedWidth: f.width,
-              codedHeight: f.height,
+              codedWidth: i420Data.width,
+              codedHeight: i420Data.height,
               timestamp: ptsUs
             });
-            processAndEncodeFrame(vf);
+            processAndEncodeFrame(vf, false);
           }
         }
 
@@ -1782,31 +2121,46 @@
 
       // Flush remaining buffered frames from software decoder
       try {
-        const flushedFrames = await libav.ff_decode_multi(c_dec, dec_pkt, dec_frame, [], { fin: true });
+        let flushedFrames;
+        if (filterGraphInfo) {
+          flushedFrames = await libav.ff_decode_filter_multi(c_dec, filterGraphInfo.src_ctx, filterGraphInfo.sink_ctx, dec_pkt, dec_frame, [], { fin: true });
+        } else {
+          flushedFrames = await libav.ff_decode_multi(c_dec, dec_pkt, dec_frame, [], { fin: true });
+        }
         for (const f of flushedFrames) {
           let ptsUs = 0;
+          const fTbNum = (f.time_base_num && f.time_base_den) ? f.time_base_num : tbNum;
+          const fTbDen = (f.time_base_num && f.time_base_den) ? f.time_base_den : tbDen;
           if (hasValidPts && f.pts !== undefined && f.pts !== null) {
-            ptsUs = Math.round((f.pts * tbNum / tbDen) * 1e6);
+            ptsUs = Math.round((f.pts * fTbNum / fTbDen) * 1e6);
           } else if (hasValidDts && f.pkt_dts !== undefined && f.pkt_dts !== null) {
-            ptsUs = Math.round((f.pkt_dts * tbNum / tbDen) * 1e6);
+            ptsUs = Math.round((f.pkt_dts * fTbNum / fTbDen) * 1e6);
           } else {
             ptsUs = Math.round((softwareDecodedCount / origFps) * 1e6);
           }
           softwareDecodedCount++;
 
-          const i420Data = extractPackedI420(f);
+          const discardOdd = (deinterlaceMode === 'discard_fields');
+          const i420Data = extractPackedI420(f, { discardOddFields: discardOdd });
           if (i420Data) {
             const vf = new VideoFrame(i420Data, {
               format: 'I420',
-              codedWidth: f.width,
-              codedHeight: f.height,
+              codedWidth: i420Data.width,
+              codedHeight: i420Data.height,
               timestamp: ptsUs
             });
-            processAndEncodeFrame(vf);
+            processAndEncodeFrame(vf, false);
           }
         }
       } catch (flushErr) {
         console.warn('[MediaWorker] Soft decoder flush warning:', flushErr);
+      }
+
+      if (filterGraphInfo) {
+        try {
+          await libav.avfilter_graph_free_js(filterGraphInfo.filter_graph);
+        } catch (_) {}
+        filterGraphInfo = null;
       }
 
       await libav.ff_free_decoder(c_dec, dec_pkt, dec_frame);
@@ -1814,6 +2168,11 @@
 
     await videoEncoder.flush();
     videoEncoder.close();
+
+    if (fieldRenderer) {
+      fieldRenderer.destroy();
+      fieldRenderer = null;
+    }
 
     // Process Audio Track (if present and not muted)
     let encodedAudioPackets = [];
