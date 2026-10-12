@@ -181,6 +181,59 @@
     return codecStr;
   }
 
+  async function resolveOptimalAvcCodec(requestedCodec, width, height, isExplicit = false) {
+    const pixels = width * height;
+    let levelHex = '1E'; // Level 3.0 (480p)
+    if (pixels > 2073600) levelHex = '33'; // Level 5.1 (4K)
+    else if (pixels > 921600) levelHex = '28'; // Level 4.0 (1080p)
+    else if (pixels > 414720) levelHex = '1F'; // Level 3.1 (720p)
+
+    // Non-AVC codecs (HEVC, VP9, AV1)
+    if (requestedCodec && !requestedCodec.startsWith('avc1') && requestedCodec !== 'auto') {
+      return requestedCodec;
+    }
+
+    const candidateProfiles = [
+      { prefix: 'avc1.6400', name: 'High' },
+      { prefix: 'avc1.4D40', name: 'Main' },
+      { prefix: 'avc1.42E0', name: 'Baseline' }
+    ];
+
+    if (typeof VideoEncoder !== 'undefined' && typeof VideoEncoder.isConfigSupported === 'function') {
+      // If a specific profile was explicitly chosen by the user in Custom mode, test and respect it first
+      if (isExplicit && requestedCodec && requestedCodec !== 'auto' && requestedCodec !== 'avc1' && requestedCodec.startsWith('avc1.')) {
+        const validRequested = ensureValidAvcCodec(requestedCodec, width, height);
+        try {
+          const res = await VideoEncoder.isConfigSupported({
+            codec: validRequested,
+            width,
+            height,
+            bitrate: 1500000,
+            framerate: 30
+          });
+          if (res && res.supported) return validRequested;
+        } catch (_) {}
+      }
+
+      // Otherwise (presets, auto, or fallback), negotiate highest profile supported: High -> Main -> Baseline
+      for (const p of candidateProfiles) {
+        const candidate = `${p.prefix}${levelHex}`;
+        try {
+          const res = await VideoEncoder.isConfigSupported({
+            codec: candidate,
+            width,
+            height,
+            bitrate: 1500000,
+            framerate: 30
+          });
+          if (res && res.supported) return candidate;
+        } catch (_) {}
+      }
+    }
+
+    return `avc1.6400${levelHex}`;
+  }
+
   function calculateTargetBitrate(params) {
     const {
       width,
@@ -1535,7 +1588,9 @@
 
     const isEmbedded = !!options.isEmbeddedDoc;
     const finalContainer = isEmbedded ? 'mp4' : (options.container === 'mkv' ? 'mkv' : 'mp4');
-    const finalCodecStr = ensureValidAvcCodec(isEmbedded ? 'avc1.4D401F' : (options.codec || 'avc1.4D401F'), outW, outH);
+    const isExplicitCodec = !!options.explicitCodec;
+    const requestedCodec = isEmbedded ? 'auto' : (options.codec || 'auto');
+    const finalCodecStr = await resolveOptimalAvcCodec(requestedCodec, outW, outH, isExplicitCodec);
 
     // Determine if hardware WebCodecs VideoDecoder can be used
     const isModernCodec = [CODEC_IDS.H264, CODEC_IDS.HEVC, CODEC_IDS.VP8, CODEC_IDS.VP9, CODEC_IDS.AV1].includes(vStream.codec_id);
@@ -2626,6 +2681,7 @@
     compressVideo: compressMediaClient,
     compressAudio: (input, opts, prog) => compressMediaClient(input, { ...opts, mode: 'audio-only' }, prog),
     testSupportedCodecs,
+    resolveOptimalAvcCodec,
     isWebCodecsSupported,
     calculateVideoDimensions,
     calculateTargetBitrate,

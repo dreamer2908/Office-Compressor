@@ -27,7 +27,7 @@
         fps: 15,
         rateControl: 'qualityFactor',
         qualityFactor: 'low', // 0.05
-        codec: 'avc1.42E01E',
+        codec: 'auto',
         audioMode: 'aac',
         audioBitrate: 64000,
         audioChannels: 'stereo',
@@ -55,7 +55,7 @@
         fps: 15,
         rateControl: 'qualityFactor',
         qualityFactor: 'good', // 0.08
-        codec: 'avc1.4D401F',
+        codec: 'auto',
         audioMode: 'aac',
         audioBitrate: 96000,
         audioChannels: 'stereo',
@@ -83,7 +83,7 @@
         fps: 'original',
         rateControl: 'qualityFactor',
         qualityFactor: 'high', // 0.10
-        codec: 'avc1.4D401F',
+        codec: 'auto',
         audioMode: 'passthrough',
         audioBitrate: 128000,
         audioChannels: 'original',
@@ -259,8 +259,13 @@
         DOM.codecSelect.innerHTML = '';
         DOM.codecSelect.disabled = false;
         if (state.supportedCodecs.length === 0) {
-          DOM.codecSelect.innerHTML = '<option value="avc1.4D401F">AVC / H.264 (Default)</option>';
+          DOM.codecSelect.innerHTML = '<option value="auto">Auto (Highest Supported Profile)</option>';
         } else {
+          const autoOpt = document.createElement('option');
+          autoOpt.value = 'auto';
+          autoOpt.textContent = 'Auto (Highest Supported Profile)';
+          DOM.codecSelect.appendChild(autoOpt);
+
           state.supportedCodecs.forEach((c) => {
             const opt = document.createElement('option');
             opt.value = c.codec;
@@ -361,7 +366,8 @@
         qualityFactor: DOM.customQualityFactor.value,
         exactBitrate: Number(DOM.customExactBitrate.value),
         targetSizeBytes: Number(DOM.customTargetSize.value) * 1024 * 1024,
-        codec: DOM.codecSelect.value || 'avc1.4D401F',
+        codec: DOM.codecSelect.value || 'auto',
+        explicitCodec: DOM.codecSelect.value !== 'auto',
         audioMode,
         audioBitrate,
         audioChannels,
