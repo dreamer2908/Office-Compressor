@@ -10,6 +10,9 @@
   <!-- Resilient Dependency Bootstrap Loader (Loads local ./libs/*.js with automatic CDN fallback) -->
   <script src="loader.js"></script>
 
+  <!-- Zero-Dependency Internationalization Engine & Language Dictionaries -->
+  <script src="i18n.js"></script>
+
   <!-- Compression Engines -->
   <script src="image-worker.js"></script>
   <script src="media-worker.js"></script>
@@ -26,14 +29,22 @@
       <div class="brand-section">
         <div class="brand-icon">⚡</div>
         <div>
-          <h1 class="brand-title">Office Compressor</h1>
-          <p class="brand-subtitle">Zero-Install Client-Side Optimizer</p>
+          <h1 class="brand-title" data-i18n="header.brand_title">Office Compressor</h1>
+          <p class="brand-subtitle" data-i18n="header.brand_subtitle">Zero-Install Client-Side Optimizer</p>
         </div>
       </div>
 
       <div class="header-actions">
-        <span id="dep-status-pill" class="dep-pill dep-ok" title="All compression dependencies loaded">8/8 Libs Ready</span>
-        <button id="theme-toggle" class="btn btn-secondary btn-sm" aria-label="Toggle theme">☀️ Light</button>
+        <span id="dep-status-pill" class="dep-pill dep-ok" title="All compression dependencies loaded" data-i18n-title="header.libs_tooltip">8/8 Libs Ready</span>
+        <div class="lang-select-wrapper">
+          <select id="lang-select" class="lang-select" aria-label="Select language" data-i18n-aria="header.lang_select_aria">
+            <option value="en">English</option>
+            <option value="zh-CN">简体中文</option>
+            <option value="zh-TW">繁體中文</option>
+            <option value="vi">Tiếng Việt</option>
+          </select>
+        </div>
+        <button id="theme-toggle" class="btn btn-secondary btn-sm" aria-label="Toggle theme" data-i18n-aria="header.theme_toggle_aria">☀️ Light</button>
       </div>
     </div>
   </header>
@@ -45,15 +56,15 @@
     <div id="webcodecs-warning-banner" role="alert" style="display: none; background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35); border-radius: var(--radius-md); padding: 0.9rem 1.25rem; color: var(--text-primary); align-items: flex-start; gap: 0.85rem; margin-bottom: 0.5rem;">
       <span style="font-size: 1.35rem; line-height: 1; flex-shrink: 0;">⚠️</span>
       <div style="flex: 1; font-size: 0.875rem; line-height: 1.45;">
-        <strong style="color: var(--accent-warning); display: block; margin-bottom: 0.25rem; font-size: 0.95rem;">Video Encoding Disabled (WebCodecs Unavailable)</strong>
-        <span id="webcodecs-warning-reason">WebCodecs is unavailable because this page is served over an unsecure HTTP connection. Standalone videos will be skipped and embedded document videos will remain intact. Access via <strong>HTTPS</strong> or <strong>localhost</strong> to enable video compression.</span>
+        <strong style="color: var(--accent-warning); display: block; margin-bottom: 0.25rem; font-size: 0.95rem;" data-i18n="webcodecs_warning.title">Video Encoding Disabled (WebCodecs Unavailable)</strong>
+        <span id="webcodecs-warning-reason" data-i18n-html="webcodecs_warning.reason_unsecure">WebCodecs is unavailable because this page is served over an unsecure HTTP connection. Standalone videos will be skipped and embedded document videos will remain intact. Access via <strong>HTTPS</strong> or <strong>localhost</strong> to enable video compression.</span>
       </div>
     </div>
 
     <!-- Hero Section -->
     <section class="hero-section">
-      <h2 class="hero-title">Compress Documents, Images & Videos <span class="hero-highlight">Privately</span></h2>
-      <p class="hero-description">
+      <h2 class="hero-title" data-i18n-html="hero.title_html">Compress Documents, Images & Videos <span class="hero-highlight">Privately</span></h2>
+      <p class="hero-description" data-i18n="hero.desc">
         100% browser-based compression. All processing runs in memory on your device with no server uploads.
         Shrink files effortlessly to fit email limits.
       </p>
@@ -62,7 +73,7 @@
     <!-- Presets Section -->
     <section>
       <div class="section-header">
-        <h3 class="section-title"><span>🎯</span> Select Compression Preset</h3>
+        <h3 class="section-title"><span>🎯</span> <span data-i18n="presets.title">Select Compression Preset</span></h3>
       </div>
 
       <div class="preset-grid">
@@ -70,14 +81,14 @@
         <div class="preset-card" data-preset="email-strict">
           <div class="preset-header">
             <span class="preset-icon">✉️</span>
-            <span class="preset-badge">&lt; 10 MB</span>
+            <span class="preset-badge" data-i18n="presets.email_strict.badge">&lt; 10 MB</span>
           </div>
-          <h4 class="preset-title">Email Strict</h4>
-          <p class="preset-desc">Maximum reduction for strict enterprise mailboxes (Exchange / Outlook limits).</p>
+          <h4 class="preset-title" data-i18n="presets.email_strict.title">Email Strict</h4>
+          <p class="preset-desc" data-i18n="presets.email_strict.desc">Maximum reduction for strict enterprise mailboxes (Exchange / Outlook limits).</p>
           <div class="preset-specs">
-            <div class="spec-item"><span>🎬</span> Video: 480p @ 15fps, Low Bitrate (0.05), AAC 64k</div>
-            <div class="spec-item"><span>🎵</span> Audio: AAC 64k Stereo</div>
-            <div class="spec-item"><span>🖼️</span> Images/Docs: 720p Max, Q: 60</div>
+            <div class="spec-item" data-i18n="presets.email_strict.spec_video">🎬 Video: 480p @ 15fps, Low Bitrate (0.05), AAC 64k</div>
+            <div class="spec-item" data-i18n="presets.email_strict.spec_audio">🎵 Audio: AAC 64k Stereo</div>
+            <div class="spec-item" data-i18n="presets.email_strict.spec_img_doc">🖼️ Images/Docs: 720p Max, Q: 60</div>
           </div>
         </div>
 
@@ -85,14 +96,14 @@
         <div class="preset-card active" data-preset="email-standard">
           <div class="preset-header">
             <span class="preset-icon">🚀</span>
-            <span class="preset-badge">&lt; 25 MB</span>
+            <span class="preset-badge" data-i18n="presets.email_standard.badge">&lt; 25 MB</span>
           </div>
-          <h4 class="preset-title">Email Standard</h4>
-          <p class="preset-desc">Recommended balance of quality and size for standard email attachments (Gmail / Outlook).</p>
+          <h4 class="preset-title" data-i18n="presets.email_standard.title">Email Standard</h4>
+          <p class="preset-desc" data-i18n="presets.email_standard.desc">Recommended balance of quality and size for standard email attachments (Gmail / Outlook).</p>
           <div class="preset-specs">
-            <div class="spec-item"><span>🎬</span> Video: 720p @ 15fps, Good Bitrate (0.08), AAC 96k</div>
-            <div class="spec-item"><span>🎵</span> Audio: AAC 96k Stereo</div>
-            <div class="spec-item"><span>🖼️</span> Images/Docs: 1080p Max, Q: 75</div>
+            <div class="spec-item" data-i18n="presets.email_standard.spec_video">🎬 Video: 720p @ 15fps, Good Bitrate (0.08), AAC 96k</div>
+            <div class="spec-item" data-i18n="presets.email_standard.spec_audio">🎵 Audio: AAC 96k Stereo</div>
+            <div class="spec-item" data-i18n="presets.email_standard.spec_img_doc">🖼️ Images/Docs: 1080p Max, Q: 75</div>
           </div>
         </div>
 
@@ -100,14 +111,14 @@
         <div class="preset-card" data-preset="screen-presentation">
           <div class="preset-header">
             <span class="preset-icon">🖥️</span>
-            <span class="preset-badge">High Fidelity</span>
+            <span class="preset-badge" data-i18n="presets.screen_presentation.badge">High Fidelity</span>
           </div>
-          <h4 class="preset-title">Screen Presentation</h4>
-          <p class="preset-desc">Crisp visuals for slide decks, projector displays, and UI screenshots.</p>
+          <h4 class="preset-title" data-i18n="presets.screen_presentation.title">Screen Presentation</h4>
+          <p class="preset-desc" data-i18n="presets.screen_presentation.desc">Crisp visuals for slide decks, projector displays, and UI screenshots.</p>
           <div class="preset-specs">
-            <div class="spec-item"><span>🎬</span> Video: 1080p @ Original fps, High Bitrate (0.10)</div>
-            <div class="spec-item"><span>🎵</span> Audio: AAC 128k Original</div>
-            <div class="spec-item"><span>🖼️</span> Images/Docs: 1080p Max, Q: 85 (PNG for charts)</div>
+            <div class="spec-item" data-i18n="presets.screen_presentation.spec_video">🎬 Video: 1080p @ Original fps, High Bitrate (0.10)</div>
+            <div class="spec-item" data-i18n="presets.screen_presentation.spec_audio">🎵 Audio: AAC 128k Original</div>
+            <div class="spec-item" data-i18n="presets.screen_presentation.spec_img_doc">🖼️ Images/Docs: 1080p Max, Q: 85 (PNG for charts)</div>
           </div>
         </div>
 
@@ -115,13 +126,13 @@
         <div class="preset-card" data-preset="custom">
           <div class="preset-header">
             <span class="preset-icon">⚙️</span>
-            <span class="preset-badge">Advanced</span>
+            <span class="preset-badge" data-i18n="presets.custom.badge">Advanced</span>
           </div>
-          <h4 class="preset-title">Custom Mode</h4>
-          <p class="preset-desc">Full manual control over codecs, resolutions, framerates, and quality settings.</p>
+          <h4 class="preset-title" data-i18n="presets.custom.title">Custom Mode</h4>
+          <p class="preset-desc" data-i18n="presets.custom.desc">Full manual control over codecs, resolutions, framerates, and quality settings.</p>
           <div class="preset-specs">
-            <div class="spec-item"><span>🔧</span> VideoCodecs: AVC, HEVC, VP9, AV1</div>
-            <div class="spec-item"><span>🎨</span> Images: WebP, JPEG, PNG with slider</div>
+            <div class="spec-item" data-i18n="presets.custom.spec_codecs">🔧 VideoCodecs: AVC, HEVC, VP9, AV1</div>
+            <div class="spec-item" data-i18n="presets.custom.spec_images">🎨 Images: WebP, JPEG, PNG with slider</div>
           </div>
         </div>
       </div>
@@ -132,141 +143,141 @@
       <div class="custom-grid">
         <!-- Video Custom Controls -->
         <div>
-          <h4 class="custom-group-title"><span>🎬</span> Video Compression Options</h4>
+          <h4 class="custom-group-title"><span>🎬</span> <span data-i18n="custom_controls.video_title">Video Compression Options</span></h4>
           
           <div class="control-row">
-            <label for="custom-video-res">Resolution Cap</label>
+            <label for="custom-video-res" data-i18n="custom_controls.res_cap">Resolution Cap</label>
             <select id="custom-video-res">
-              <option value="original">Original Dimensions</option>
-              <option value="1080p" selected>1080p (1920 × 1080)</option>
-              <option value="720p">720p (1280 × 720)</option>
-              <option value="480p">480p (854 × 480)</option>
+              <option value="original" data-i18n="custom_controls.res_original">Original Dimensions</option>
+              <option value="1080p" selected data-i18n="custom_controls.res_1080p">1080p (1920 × 1080)</option>
+              <option value="720p" data-i18n="custom_controls.res_720p">720p (1280 × 720)</option>
+              <option value="480p" data-i18n="custom_controls.res_480p">480p (854 × 480)</option>
             </select>
           </div>
 
           <div class="control-row">
-            <label for="custom-video-fps">Framerate</label>
+            <label for="custom-video-fps" data-i18n="custom_controls.framerate">Framerate</label>
             <select id="custom-video-fps">
-              <option value="original">Original Framerate</option>
-              <option value="30">30 fps</option>
-              <option value="24">24 fps</option>
-              <option value="15" selected>15 fps (Recommended)</option>
-              <option value="10">10 fps</option>
+              <option value="original" data-i18n="custom_controls.fps_original">Original Framerate</option>
+              <option value="30" data-i18n="custom_controls.fps_30">30 fps</option>
+              <option value="24" data-i18n="custom_controls.fps_24">24 fps</option>
+              <option value="15" selected data-i18n="custom_controls.fps_15">15 fps (Recommended)</option>
+              <option value="10" data-i18n="custom_controls.fps_10">10 fps</option>
             </select>
           </div>
 
           <div class="control-row">
-            <label for="custom-rate-control">Rate Control Mode</label>
+            <label for="custom-rate-control" data-i18n="custom_controls.rate_control">Rate Control Mode</label>
             <select id="custom-rate-control">
-              <option value="qualityFactor" selected>Dynamic Quality Factor</option>
-              <option value="bitrate">Target Bitrate (kbps)</option>
-              <option value="targetSize">Target File Size (MB)</option>
+              <option value="qualityFactor" selected data-i18n="custom_controls.rc_quality_factor">Dynamic Quality Factor</option>
+              <option value="bitrate" data-i18n="custom_controls.rc_bitrate">Target Bitrate (kbps)</option>
+              <option value="targetSize" data-i18n="custom_controls.rc_target_size">Target File Size (MB)</option>
             </select>
           </div>
 
           <div id="group-quality-factor" class="control-row">
-            <label for="custom-quality-factor">Quality Factor</label>
+            <label for="custom-quality-factor" data-i18n="custom_controls.quality_factor">Quality Factor</label>
             <select id="custom-quality-factor">
-              <option value="low">Low (0.05) - Compact</option>
-              <option value="good" selected>Good (0.08) - Balanced</option>
-              <option value="high">High (0.10) - Presentation</option>
-              <option value="very-high">Very High (0.15) - Archival</option>
+              <option value="low" data-i18n="custom_controls.qf_low">Low (0.05) - Compact</option>
+              <option value="good" selected data-i18n="custom_controls.qf_good">Good (0.08) - Balanced</option>
+              <option value="high" data-i18n="custom_controls.qf_high">High (0.10) - Presentation</option>
+              <option value="very-high" data-i18n="custom_controls.qf_very_high">Very High (0.15) - Archival</option>
             </select>
           </div>
 
           <div id="group-exact-bitrate" class="control-row hidden">
-            <label for="custom-exact-bitrate">Video Bitrate (kbps)</label>
+            <label for="custom-exact-bitrate" data-i18n="custom_controls.exact_bitrate">Video Bitrate (kbps)</label>
             <input type="number" id="custom-exact-bitrate" min="150" max="25000" step="50" value="1200">
           </div>
 
           <div id="group-target-size" class="control-row hidden">
-            <label for="custom-target-size">Target Size (MB)</label>
+            <label for="custom-target-size" data-i18n="custom_controls.target_size">Target Size (MB)</label>
             <input type="number" id="custom-target-size" min="1" max="500" step="1" value="20">
           </div>
 
           <div class="control-row">
-            <label for="custom-video-codec">Hardware Codec</label>
+            <label for="custom-video-codec" data-i18n="custom_controls.hardware_codec">Hardware Codec</label>
             <select id="custom-video-codec">
-              <option value="auto">Auto (Detecting support...)</option>
+              <option value="auto" data-i18n="custom_controls.codec_detecting">Auto (Detecting support...)</option>
             </select>
           </div>
 
           <div class="control-row">
-            <label for="custom-audio-mode">Audio Mode</label>
+            <label for="custom-audio-mode" data-i18n="custom_controls.audio_mode">Audio Mode</label>
             <select id="custom-audio-mode">
-              <option value="aac" selected>Transcode AAC</option>
-              <option value="opus">Transcode Opus</option>
-              <option value="passthrough">Pass-through Raw</option>
-              <option value="mute">Mute Audio</option>
+              <option value="aac" selected data-i18n="custom_controls.audio_aac">Transcode AAC</option>
+              <option value="opus" data-i18n="custom_controls.audio_opus">Transcode Opus</option>
+              <option value="passthrough" data-i18n="custom_controls.audio_passthrough">Pass-through Raw</option>
+              <option value="mute" data-i18n="custom_controls.audio_mute">Mute Audio</option>
             </select>
           </div>
 
           <div class="control-row">
-            <label for="custom-audio-bitrate">Audio Bitrate</label>
+            <label for="custom-audio-bitrate" data-i18n="custom_controls.audio_bitrate">Audio Bitrate</label>
             <select id="custom-audio-bitrate">
-              <option value="32000">32 kbps (Ultra Low)</option>
-              <option value="48000">48 kbps (Voice / Low)</option>
-              <option value="64000">64 kbps (Modest)</option>
-              <option value="96000" selected>96 kbps (Standard)</option>
-              <option value="128000">128 kbps (High Fidelity)</option>
-              <option value="160000">160 kbps (Studio)</option>
-              <option value="192000">192 kbps (Maximum)</option>
+              <option value="32000" data-i18n="custom_controls.audio_bitrate_32k">32 kbps (Ultra Low)</option>
+              <option value="48000" data-i18n="custom_controls.audio_bitrate_48k">48 kbps (Voice / Low)</option>
+              <option value="64000" data-i18n="custom_controls.audio_bitrate_64k">64 kbps (Modest)</option>
+              <option value="96000" selected data-i18n="custom_controls.audio_bitrate_96k">96 kbps (Standard)</option>
+              <option value="128000" data-i18n="custom_controls.audio_bitrate_128k">128 kbps (High Fidelity)</option>
+              <option value="160000" data-i18n="custom_controls.audio_bitrate_160k">160 kbps (Studio)</option>
+              <option value="192000" data-i18n="custom_controls.audio_bitrate_192k">192 kbps (Maximum)</option>
             </select>
           </div>
 
           <div class="control-row">
-            <label for="custom-audio-channels">Audio Channel</label>
+            <label for="custom-audio-channels" data-i18n="custom_controls.audio_channel">Audio Channel</label>
             <select id="custom-audio-channels">
-              <option value="original">Keep Original</option>
-              <option value="stereo" selected>Stereo (2 Channels)</option>
-              <option value="mono">Mono (1 Channel)</option>
+              <option value="original" data-i18n="custom_controls.channel_original">Keep Original</option>
+              <option value="stereo" selected data-i18n="custom_controls.channel_stereo">Stereo (2 Channels)</option>
+              <option value="mono" data-i18n="custom_controls.channel_mono">Mono (1 Channel)</option>
             </select>
           </div>
 
           <div class="control-row">
-            <label for="custom-container">Output Container</label>
+            <label for="custom-container" data-i18n="custom_controls.container">Output Container</label>
             <select id="custom-container">
-              <option value="mp4" selected>MP4 Container (.mp4)</option>
-              <option value="mkv">Matroska / WebM (.mkv)</option>
+              <option value="mp4" selected data-i18n="custom_controls.container_mp4">MP4 Container (.mp4)</option>
+              <option value="mkv" data-i18n="custom_controls.container_mkv">Matroska / WebM (.mkv)</option>
             </select>
           </div>
         </div>
 
         <!-- Image Custom Controls -->
         <div>
-          <h4 class="custom-group-title"><span>🖼️</span> Standalone & Embedded Image Options</h4>
+          <h4 class="custom-group-title"><span>🖼️</span> <span data-i18n="custom_controls.img_title">Standalone & Embedded Image Options</span></h4>
 
           <div class="control-row">
-            <label for="custom-img-format">Output Format</label>
+            <label for="custom-img-format" data-i18n="custom_controls.img_format">Output Format</label>
             <select id="custom-img-format">
-              <option value="auto" selected>Auto-detect (PNG for UI, WebP for Photos)</option>
-              <option value="webp">WebP (High Compression)</option>
-              <option value="jpeg">JPEG (Standard Photography)</option>
-              <option value="png">PNG (Lossless / Diagrams)</option>
+              <option value="auto" selected data-i18n="custom_controls.img_format_auto">Auto-detect (PNG for UI, WebP for Photos)</option>
+              <option value="webp" data-i18n="custom_controls.img_format_webp">WebP (High Compression)</option>
+              <option value="jpeg" data-i18n="custom_controls.img_format_jpeg">JPEG (Standard Photography)</option>
+              <option value="png" data-i18n="custom_controls.img_format_png">PNG (Lossless / Diagrams)</option>
             </select>
           </div>
 
           <div class="control-row">
             <label for="custom-img-quality">
-              <span>Compression Quality</span>
+              <span data-i18n="custom_controls.img_quality">Compression Quality</span>
               <span id="custom-img-quality-val">75%</span>
             </label>
             <input type="range" id="custom-img-quality" min="1" max="100" value="75">
           </div>
 
           <div class="control-row">
-            <label for="custom-img-res">Max Bounding Box</label>
+            <label for="custom-img-res" data-i18n="custom_controls.img_res">Max Bounding Box</label>
             <select id="custom-img-res">
-              <option value="original">Original Dimensions</option>
-              <option value="1080p" selected>1080p (Max 1920 × 1080)</option>
-              <option value="720p">720p (Max 1280 × 720)</option>
-              <option value="480p">480p (Max 854 × 480)</option>
+              <option value="original" data-i18n="custom_controls.img_res_original">Original Dimensions</option>
+              <option value="1080p" selected data-i18n="custom_controls.img_res_1080p">1080p (Max 1920 × 1080)</option>
+              <option value="720p" data-i18n="custom_controls.img_res_720p">720p (Max 1280 × 720)</option>
+              <option value="480p" data-i18n="custom_controls.img_res_480p">480p (Max 854 × 480)</option>
             </select>
           </div>
 
           <div class="preset-specs" style="margin-top: 1.5rem;">
-            <div class="spec-item">ℹ️ Embedded document images strictly enforce JPEG/PNG for backward compatibility.</div>
-            <div class="spec-item">ℹ️ Embedded doc videos always transcode to AVC + AAC in MP4 container.</div>
+            <div class="spec-item" data-i18n="custom_controls.note_doc_img">ℹ️ Embedded document images strictly enforce JPEG/PNG for backward compatibility.</div>
+            <div class="spec-item" data-i18n="custom_controls.note_doc_video">ℹ️ Embedded doc videos always transcode to AVC + AAC in MP4 container.</div>
           </div>
         </div>
       </div>
@@ -276,17 +287,17 @@
     <section>
       <div id="dropzone" class="dropzone-container">
         <div class="dropzone-icon">📁</div>
-        <h3 class="dropzone-heading">Drop Files or Folders Here</h3>
-        <p class="dropzone-subtext">or click to browse from your computer</p>
+        <h3 class="dropzone-heading" data-i18n="dropzone.heading">Drop Files or Folders Here</h3>
+        <p class="dropzone-subtext" data-i18n="dropzone.subtext">or click to browse from your computer</p>
 
         <div class="supported-formats-pills">
-          <span class="format-pill">Word (.docx, .doc)</span>
-          <span class="format-pill">PowerPoint (.pptx, .ppt)</span>
-          <span class="format-pill">Excel (.xlsx, .xls)</span>
-          <span class="format-pill">PDF (.pdf)</span>
-          <span class="format-pill">Videos (.mp4, .mov, .avi, .mkv, .webm, .mts, .m2ts)</span>
-          <span class="format-pill">Audios (.m4a, .mp3, .wav, .aac, .ogg, .flac)</span>
-          <span class="format-pill">Images (.jpg, .png, .webp, .tiff, .bmp, .gif)</span>
+          <span class="format-pill" data-i18n="dropzone.format_word">Word (.docx, .doc)</span>
+          <span class="format-pill" data-i18n="dropzone.format_ppt">PowerPoint (.pptx, .ppt)</span>
+          <span class="format-pill" data-i18n="dropzone.format_excel">Excel (.xlsx, .xls)</span>
+          <span class="format-pill" data-i18n="dropzone.format_pdf">PDF (.pdf)</span>
+          <span class="format-pill" data-i18n="dropzone.format_videos">Videos (.mp4, .mov, .avi, .mkv, .webm, .mts, .m2ts)</span>
+          <span class="format-pill" data-i18n="dropzone.format_audios">Audios (.m4a, .mp3, .wav, .aac, .ogg, .flac)</span>
+          <span class="format-pill" data-i18n="dropzone.format_images">Images (.jpg, .png, .webp, .tiff, .bmp, .gif)</span>
         </div>
 
         <input type="file" id="file-input" multiple class="hidden" accept=".docx,.xlsx,.pptx,.pdf,.doc,.xls,.ppt,.jpg,.jpeg,.png,.webp,.gif,.bmp,.avif,.tiff,.mp4,.mov,.mkv,.webm,.avi,.wmv,.mts,.m2ts,.flv,.wav,.mp3,.m4a,.wma,.flac,.aac,.ogg">
@@ -298,27 +309,27 @@
       <div class="queue-header-bar">
         <div class="queue-stats-group">
           <div class="stat-item">
-            <span class="stat-label">Batch Progress</span>
+            <span class="stat-label" data-i18n="queue.batch_progress">Batch Progress</span>
             <div class="global-progress-track">
               <div id="global-progress-bar" class="global-progress-fill"></div>
             </div>
           </div>
 
           <div class="stat-item">
-            <span class="stat-label">Status</span>
+            <span class="stat-label" data-i18n="queue.status">Status</span>
             <span id="global-status-text" class="stat-value">0/0 completed</span>
           </div>
 
           <div class="stat-item">
-            <span class="stat-label">Space Savings</span>
+            <span class="stat-label" data-i18n="queue.space_savings">Space Savings</span>
             <span id="total-saved-badge" class="stat-value" style="color: var(--accent-success);">Saved: 0 B</span>
           </div>
         </div>
 
         <div class="queue-btn-group">
-          <button id="btn-start-batch" class="btn btn-primary">⚡ Start Compression</button>
-          <button id="btn-download-all" class="btn btn-secondary" disabled>📦 Download All (ZIP)</button>
-          <button id="btn-clear-queue" class="btn btn-secondary">✕ Clear</button>
+          <button id="btn-start-batch" class="btn btn-primary" data-i18n="queue.btn_start">⚡ Start Compression</button>
+          <button id="btn-download-all" class="btn btn-secondary" disabled data-i18n="queue.btn_download_zip">📦 Download All (ZIP)</button>
+          <button id="btn-clear-queue" class="btn btn-secondary" data-i18n="queue.btn_clear">✕ Clear</button>
         </div>
       </div>
 
@@ -326,13 +337,13 @@
         <table class="queue-table">
           <thead>
             <tr>
-              <th>File Name</th>
-              <th>Type</th>
-              <th>Original Size</th>
-              <th>Compressed Size</th>
-              <th>Space Saved</th>
-              <th>Status</th>
-              <th>Actions</th>
+              <th data-i18n="queue.th_name">File Name</th>
+              <th data-i18n="queue.th_type">Type</th>
+              <th data-i18n="queue.th_orig_size">Original Size</th>
+              <th data-i18n="queue.th_comp_size">Compressed Size</th>
+              <th data-i18n="queue.th_space_saved">Space Saved</th>
+              <th data-i18n="queue.th_status">Status</th>
+              <th data-i18n="queue.th_actions">Actions</th>
             </tr>
           </thead>
           <tbody id="queue-tbody">
@@ -348,8 +359,8 @@
   <div id="compare-modal" class="modal-overlay hidden" role="dialog" aria-modal="true">
     <div class="modal-content">
       <div class="modal-header">
-        <h4 id="modal-title" class="brand-title">Visual Comparison</h4>
-        <button id="modal-close" class="btn btn-icon" aria-label="Close modal">✕</button>
+        <h4 id="modal-title" class="brand-title" data-i18n="modal.visual_comparison">Visual Comparison</h4>
+        <button id="modal-close" class="btn btn-icon" aria-label="Close modal" data-i18n-aria="modal.close_aria">✕</button>
       </div>
 
       <div class="modal-body">
@@ -357,7 +368,7 @@
           <!-- Original Panel -->
           <div class="compare-card">
             <div class="compare-label">
-              <span>Original File</span>
+              <span data-i18n="modal.orig_file">Original File</span>
               <span id="modal-orig-meta">0 B</span>
             </div>
             <div id="modal-orig-preview" class="preview-container">
@@ -368,7 +379,7 @@
           <!-- Compressed Panel -->
           <div class="compare-card">
             <div class="compare-label">
-              <span>Compressed Output</span>
+              <span data-i18n="modal.comp_output">Compressed Output</span>
               <span id="modal-comp-meta" style="color: var(--accent-success);">0 B</span>
             </div>
             <div id="modal-comp-preview" class="preview-container">

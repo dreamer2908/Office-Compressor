@@ -86,6 +86,7 @@
           console.warn(`[DocProcessor] Skipping embedded video ${item.path}: WebCodecs is unavailable${isUnsecure ? ' (unsecure HTTP context)' : ''}. Keeping original video intact.`);
           if (onProgress && totalMedia > 0) {
             onProgress({
+              phaseCode: 'doc_video_intact',
               phase: `Keeping video intact (WebCodecs unavailable): ${item.path.split('/').pop()}`,
               progress: Math.min(85, Math.round(((processedCount + 1) / totalMedia) * 80))
             });
@@ -109,6 +110,7 @@
               const basePct = (processedCount / totalMedia) * 80;
               const subPct = ((videoProg.progress || 0) / 100) * (80 / totalMedia);
               onProgress({
+                phaseCode: 'transcoding_video',
                 phase: `Compressing video ${item.path}`,
                 progress: Math.min(85, Math.round(basePct + subPct))
               });
@@ -169,6 +171,7 @@
                 const basePct = (processedCount / totalMedia) * 80;
                 const subPct = ((audioProg.progress || 0) / 100) * (80 / totalMedia);
                 onProgress({
+                  phaseCode: 'compressing_audio',
                   phase: `Compressing audio ${item.path}`,
                   progress: Math.min(85, Math.round(basePct + subPct))
                 });
@@ -218,6 +221,7 @@
       processedCount++;
       if (onProgress) {
         onProgress({
+          phaseCode: 'processing_media',
           phase: 'processing_media',
           progress: Math.round((processedCount / Math.max(1, totalMedia)) * 80),
           processedCount,
@@ -242,6 +246,7 @@
       (metadata) => {
         if (onProgress) {
           onProgress({
+            phaseCode: 'packaging',
             phase: 'packaging',
             progress: 80 + Math.round((metadata.percent / 100) * 20)
           });
@@ -587,6 +592,7 @@
       processedCount++;
       if (onProgress && totalImages > 0) {
         onProgress({
+          phaseCode: 'downsampling_pdf_images',
           phase: 'downsampling_pdf_images',
           progress: 15 + Math.round((processedCount / totalImages) * 65),
           processedCount,
@@ -595,11 +601,11 @@
       }
     }
 
-    if (onProgress) onProgress({ phase: 'saving_pdf', progress: 85 });
+    if (onProgress) onProgress({ phaseCode: 'saving_pdf', phase: 'saving_pdf', progress: 85 });
     const pdfBytes = await pdfDoc.save({ useObjectStreams: true });
     const outBlob = new Blob([pdfBytes], { type: 'application/pdf' });
 
-    if (onProgress) onProgress({ phase: 'completed', progress: 100 });
+    if (onProgress) onProgress({ phaseCode: 'completed', phase: 'completed', progress: 100 });
 
     return {
       blob: outBlob,

@@ -2026,7 +2026,7 @@
 
           if (onProgress && i % 25 === 0) {
             const pct = Math.min(75, 25 + Math.round((i / totalPkts) * 50));
-            onProgress({ progress: pct, phase: 'Transcoding video frames' });
+            onProgress({ progress: pct, phaseCode: 'transcoding_video', phase: 'Transcoding video frames' });
           }
         }
 
@@ -2170,7 +2170,7 @@
 
         if (onProgress) {
           const pct = Math.min(75, 25 + Math.round((i / totalPkts) * 50));
-          onProgress({ progress: pct, phase: 'Software decoding & transcoding frames' });
+          onProgress({ progress: pct, phaseCode: 'encoding', phase: 'Software decoding & transcoding frames' });
         }
       }
 
@@ -2481,7 +2481,7 @@
     const outBytes = await libav.readFile(outFileName);
     await libav.unlink(outFileName);
 
-    if (onProgress) onProgress({ progress: 100, phase: 'Completed' });
+    if (onProgress) onProgress({ progress: 100, phaseCode: 'completed', phase: 'Completed' });
 
     const finalDur = lastEncodedTimestampUs > 0 ? (lastEncodedTimestampUs / 1000000) : (encodedFrameIndex / targetFps);
     return {
@@ -2500,7 +2500,7 @@
   // --- Main Media Router ---
 
   async function compressMedia(inputBlobOrBuffer, options = {}, onProgress = null) {
-    if (onProgress) onProgress({ progress: 5, phase: 'Loading libav engine' });
+    if (onProgress) onProgress({ progress: 5, phaseCode: 'loading_engine', phase: 'Loading libav engine' });
     const libav = await getLibavInstance(options);
 
     const isBuffer = inputBlobOrBuffer instanceof ArrayBuffer;

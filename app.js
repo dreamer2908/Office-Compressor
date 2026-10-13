@@ -167,6 +167,7 @@
 
   function initDomReferences() {
     DOM.themeToggle = document.getElementById('theme-toggle');
+    DOM.langSelect = document.getElementById('lang-select');
     DOM.dropzone = document.getElementById('dropzone');
     DOM.fileInput = document.getElementById('file-input');
     DOM.presetCards = document.querySelectorAll('.preset-card');
@@ -216,7 +217,9 @@
     document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem('oc_theme', theme);
     if (DOM.themeToggle) {
-      DOM.themeToggle.textContent = theme === 'dark' ? '☀️ Light' : '🌙 Dark';
+      DOM.themeToggle.textContent = theme === 'dark'
+        ? (window.I18n ? window.I18n.t('header.theme_light') : '☀️ Light')
+        : (window.I18n ? window.I18n.t('header.theme_dark') : '🌙 Dark');
     }
   }
 
@@ -243,9 +246,9 @@
         const reasonEl = document.getElementById('webcodecs-warning-reason');
         if (reasonEl) {
           if (!isSecure) {
-            reasonEl.innerHTML = 'WebCodecs is unavailable because this page is served over an <strong>unsecure HTTP connection</strong> (non-localhost). Video encoding is disabled; standalone videos will be skipped and embedded document videos will remain intact. Access via <strong>HTTPS</strong> or <strong>localhost</strong> to enable video compression.';
+            reasonEl.innerHTML = window.I18n ? window.I18n.t('webcodecs_warning.reason_unsecure') : 'WebCodecs is unavailable because this page is served over an <strong>unsecure HTTP connection</strong> (non-localhost). Video encoding is disabled; standalone videos will be skipped and embedded document videos will remain intact. Access via <strong>HTTPS</strong> or <strong>localhost</strong> to enable video compression.';
           } else {
-            reasonEl.innerHTML = 'WebCodecs (VideoEncoder) is not supported by your current browser. Video encoding is disabled; standalone videos will be skipped and embedded document videos will remain intact. Use a modern browser (Edge, Chrome, or Firefox).';
+            reasonEl.innerHTML = window.I18n ? window.I18n.t('webcodecs_warning.reason_unsupported') : 'WebCodecs (VideoEncoder) is not supported by your current browser. Video encoding is disabled; standalone videos will be skipped and embedded document videos will remain intact. Use a modern browser (Edge, Chrome, or Firefox).';
           }
         }
       } else {
@@ -258,12 +261,13 @@
       if (DOM.codecSelect) {
         DOM.codecSelect.innerHTML = '';
         DOM.codecSelect.disabled = false;
+        const autoLabel = window.I18n ? window.I18n.t('custom_controls.codec_auto') : 'Auto (Highest Supported Profile)';
         if (state.supportedCodecs.length === 0) {
-          DOM.codecSelect.innerHTML = '<option value="auto">Auto (Highest Supported Profile)</option>';
+          DOM.codecSelect.innerHTML = `<option value="auto">${autoLabel}</option>`;
         } else {
           const autoOpt = document.createElement('option');
           autoOpt.value = 'auto';
-          autoOpt.textContent = 'Auto (Highest Supported Profile)';
+          autoOpt.textContent = autoLabel;
           DOM.codecSelect.appendChild(autoOpt);
 
           state.supportedCodecs.forEach((c) => {
@@ -283,7 +287,8 @@
     } else {
       state.supportedCodecs = [];
       if (DOM.codecSelect) {
-        DOM.codecSelect.innerHTML = '<option value="">Video encoding disabled (WebCodecs unavailable)</option>';
+        const disabledLabel = window.I18n ? window.I18n.t('custom_controls.codec_disabled') : 'Video encoding disabled (WebCodecs unavailable)';
+        DOM.codecSelect.innerHTML = `<option value="">${disabledLabel}</option>`;
         DOM.codecSelect.disabled = true;
       }
       if (DOM.customVideoRes) DOM.customVideoRes.disabled = true;
@@ -408,14 +413,17 @@
         compressedSize: noWebCodecs ? file.size : null,
         status: noWebCodecs ? 'skipped' : 'queued',
         progress: noWebCodecs ? 100 : 0,
-        phase: noWebCodecs ? 'Skipped (No WebCodecs)' : 'Ready',
+        phaseCode: noWebCodecs ? 'skipped_no_webcodecs' : 'ready',
+        phase: noWebCodecs
+          ? (window.I18n ? window.I18n.t('phases.skipped_no_webcodecs') : 'Skipped (No WebCodecs)')
+          : (window.I18n ? window.I18n.t('phases.ready') : 'Ready'),
         resultBlob: noWebCodecs ? file : null,
         resultUrl: noWebCodecs ? createManagedUrl(file) : null,
         finalName: file.name,
         error: noWebCodecs
           ? (isUnsecure
-              ? 'Video encoding disabled in unsecure context (HTTP). Access via HTTPS or localhost.'
-              : 'Video encoding disabled: WebCodecs (VideoEncoder) not supported by browser.')
+              ? (window.I18n ? window.I18n.t('webcodecs_warning.reason_unsecure') : 'Video encoding disabled in unsecure context (HTTP). Access via HTTPS or localhost.')
+              : (window.I18n ? window.I18n.t('webcodecs_warning.reason_unsupported') : 'Video encoding disabled: WebCodecs (VideoEncoder) not supported by browser.'))
           : null
       };
 
@@ -599,42 +607,51 @@
           </span>
         `;
       } else if (item.status === 'skipped') {
-        savedHtml = `<span class="badge badge-neutral" title="${item.error || 'Kept original'}">Intact (0%)</span>`;
+        const intactText = window.I18n ? window.I18n.t('status.intact') : 'Intact (0%)';
+        savedHtml = `<span class="badge badge-neutral" title="${item.error || 'Kept original'}">${intactText}</span>`;
       }
 
       // Status & Progress Bar
       let statusHtml = '';
       if (item.status === 'queued') {
-        statusHtml = `<span class="status-pill status-queued">Queued</span>`;
+        const queuedText = window.I18n ? window.I18n.t('status.queued') : 'Queued';
+        statusHtml = `<span class="status-pill status-queued">${queuedText}</span>`;
       } else if (item.status === 'processing') {
+        const phaseDisplay = window.I18n ? window.I18n.formatPhase(item.phaseCode || item.phase, item.progress) : `${item.phase} (${item.progress}%)`;
         statusHtml = `
           <div class="progress-cell">
-            <span class="phase-text">${item.phase} (${item.progress}%)</span>
+            <span class="phase-text">${phaseDisplay}</span>
             <div class="item-progress-track">
               <div class="item-progress-fill" style="width: ${item.progress}%"></div>
             </div>
           </div>
         `;
       } else if (item.status === 'completed') {
-        statusHtml = `<span class="status-pill status-completed">✓ Completed</span>`;
+        const compText = window.I18n ? window.I18n.t('status.completed') : 'Completed';
+        statusHtml = `<span class="status-pill status-completed">✓ ${compText}</span>`;
       } else if (item.status === 'skipped') {
-        statusHtml = `<span class="status-pill dep-warn" style="font-size:0.75rem; padding:0.25rem 0.65rem;" title="${item.error || 'Skipped'}">⚠️ Skipped</span>`;
+        const skipText = window.I18n ? window.I18n.t('status.skipped') : 'Skipped';
+        statusHtml = `<span class="status-pill dep-warn" style="font-size:0.75rem; padding:0.25rem 0.65rem;" title="${item.error || 'Skipped'}">⚠️ ${skipText}</span>`;
       } else if (item.status === 'error') {
-        statusHtml = `<span class="status-pill status-error" title="${item.error || 'Failed'}">⚠️ Error</span>`;
+        const errText = window.I18n ? window.I18n.t('status.error') : 'Error';
+        statusHtml = `<span class="status-pill status-error" title="${item.error || 'Failed'}">⚠️ ${errText}</span>`;
       }
 
       // Action Buttons
       let actionHtml = '';
+      const saveText = window.I18n ? window.I18n.t('actions.save') : '💾 Save';
+      const prevText = window.I18n ? window.I18n.t('actions.preview') : '🔍 Preview';
+      const removeTitle = window.I18n ? window.I18n.t('actions.remove') : 'Remove';
       if (item.status === 'completed' || item.status === 'skipped') {
         actionHtml = `
-          <button class="btn btn-sm btn-primary" onclick="window.App.downloadItem('${item.id}')">💾 Save</button>
+          <button class="btn btn-sm btn-primary" onclick="window.App.downloadItem('${item.id}')">${saveText}</button>
           ${item.typeInfo.category !== 'document' ? `
-            <button class="btn btn-sm btn-secondary" onclick="window.App.openCompareModal('${item.id}')">🔍 Preview</button>
+            <button class="btn btn-sm btn-secondary" onclick="window.App.openCompareModal('${item.id}')">${prevText}</button>
           ` : ''}
         `;
       } else if (item.status === 'queued') {
         actionHtml = `
-          <button class="btn btn-sm btn-icon" onclick="window.App.removeItem('${item.id}')" title="Remove">✕</button>
+          <button class="btn btn-sm btn-icon" onclick="window.App.removeItem('${item.id}')" title="${removeTitle}">✕</button>
         `;
       }
 
@@ -683,34 +700,41 @@
           </span>
         `;
       } else if (item.status === 'skipped') {
-        savedCell.innerHTML = `<span class="badge badge-neutral" title="${item.error || 'Kept original'}">Intact (0%)</span>`;
+        const intactText = window.I18n ? window.I18n.t('status.intact') : 'Intact (0%)';
+        savedCell.innerHTML = `<span class="badge badge-neutral" title="${item.error || 'Kept original'}">${intactText}</span>`;
       }
     }
 
     if (statusCell) {
       if (item.status === 'processing') {
+        const phaseDisplay = window.I18n ? window.I18n.formatPhase(item.phaseCode || item.phase, item.progress) : `${item.phase} (${item.progress}%)`;
         statusCell.innerHTML = `
           <div class="progress-cell">
-            <span class="phase-text">${item.phase} (${item.progress}%)</span>
+            <span class="phase-text">${phaseDisplay}</span>
             <div class="item-progress-track">
               <div class="item-progress-fill" style="width: ${item.progress}%"></div>
             </div>
           </div>
         `;
       } else if (item.status === 'completed') {
-        statusCell.innerHTML = `<span class="status-pill status-completed">✓ Completed</span>`;
+        const compText = window.I18n ? window.I18n.t('status.completed') : 'Completed';
+        statusCell.innerHTML = `<span class="status-pill status-completed">✓ ${compText}</span>`;
       } else if (item.status === 'skipped') {
-        statusCell.innerHTML = `<span class="status-pill dep-warn" style="font-size:0.75rem; padding:0.25rem 0.65rem;" title="${item.error || 'Skipped'}">⚠️ Skipped</span>`;
+        const skipText = window.I18n ? window.I18n.t('status.skipped') : 'Skipped';
+        statusCell.innerHTML = `<span class="status-pill dep-warn" style="font-size:0.75rem; padding:0.25rem 0.65rem;" title="${item.error || 'Skipped'}">⚠️ ${skipText}</span>`;
       } else if (item.status === 'error') {
-        statusCell.innerHTML = `<span class="status-pill status-error" title="${item.error || 'Failed'}">⚠️ Error</span>`;
+        const errText = window.I18n ? window.I18n.t('status.error') : 'Error';
+        statusCell.innerHTML = `<span class="status-pill status-error" title="${item.error || 'Failed'}">⚠️ ${errText}</span>`;
       }
     }
 
     if (actionCell && (item.status === 'completed' || item.status === 'skipped')) {
+      const saveText = window.I18n ? window.I18n.t('actions.save') : '💾 Save';
+      const prevText = window.I18n ? window.I18n.t('actions.preview') : '🔍 Preview';
       actionCell.innerHTML = `
-        <button class="btn btn-sm btn-primary" onclick="window.App.downloadItem('${item.id}')">💾 Save</button>
+        <button class="btn btn-sm btn-primary" onclick="window.App.downloadItem('${item.id}')">${saveText}</button>
         ${item.typeInfo.category !== 'document' ? `
-          <button class="btn btn-sm btn-secondary" onclick="window.App.openCompareModal('${item.id}')">🔍 Preview</button>
+          <button class="btn btn-sm btn-secondary" onclick="window.App.openCompareModal('${item.id}')">${prevText}</button>
         ` : ''}
       `;
     }
@@ -736,13 +760,15 @@
     const diff = origBytes - compBytes;
     const pct = origBytes > 0 ? Math.round((diff / origBytes) * 100) : 0;
 
-    DOM.totalSavedBadge.textContent = diff > 0
-      ? `Saved: ${formatBytes(diff)} (-${pct}%)`
-      : 'Saved: 0 B';
+    DOM.totalSavedBadge.textContent = window.I18n
+      ? (diff > 0 ? window.I18n.t('queue.saved_amount', { amount: formatBytes(diff), pct }) : window.I18n.t('queue.saved_zero'))
+      : (diff > 0 ? `Saved: ${formatBytes(diff)} (-${pct}%)` : 'Saved: 0 B');
 
     const globalPct = total > 0 ? Math.round((completed / total) * 100) : 0;
     DOM.globalProgressBar.style.width = `${globalPct}%`;
-    DOM.globalStatusText.textContent = `${completed}/${total} files completed`;
+    DOM.globalStatusText.textContent = window.I18n
+      ? window.I18n.t('queue.files_completed', { completed, total })
+      : `${completed}/${total} files completed`;
 
     DOM.btnDownloadAll.disabled = completed === 0;
     DOM.btnStartBatch.disabled = state.isProcessing || total === 0 || completed === total;
@@ -752,7 +778,8 @@
   async function processQueueItem(item) {
     item.status = 'processing';
     item.progress = 10;
-    item.phase = 'Starting';
+    item.phaseCode = 'starting';
+    item.phase = window.I18n ? window.I18n.t('phases.starting') : 'Starting';
     updateRow(item);
 
     // Ensure all compression dependencies are loaded before executing
@@ -764,7 +791,8 @@
 
     try {
       if (item.typeInfo.category === 'image') {
-        item.phase = 'Analyzing & Compressing';
+        item.phaseCode = 'analyzing_compressing';
+        item.phase = window.I18n ? window.I18n.t('phases.analyzing_compressing') : 'Analyzing & Compressing';
         updateRow(item);
 
         const res = await window.ImageProcessor.compressImage(item.file, {
@@ -789,27 +817,30 @@
         if (!isWebCodecsAvailable()) {
           const isUnsecure = typeof window !== 'undefined' && window.isSecureContext === false;
           item.status = 'skipped';
-          item.phase = 'Skipped (No WebCodecs)';
+          item.phaseCode = 'skipped_no_webcodecs';
+          item.phase = window.I18n ? window.I18n.t('phases.skipped_no_webcodecs') : 'Skipped (No WebCodecs)';
           item.progress = 100;
           item.compressedSize = item.originalSize;
           item.finalName = item.name;
           item.resultBlob = item.file;
           item.resultUrl = createManagedUrl(item.file);
           item.error = isUnsecure
-            ? 'Video encoding disabled in unsecure context (HTTP). Access via HTTPS or localhost.'
-            : 'Video encoding disabled: WebCodecs (VideoEncoder) not supported by browser.';
+            ? (window.I18n ? window.I18n.t('webcodecs_warning.reason_unsecure') : 'Video encoding disabled in unsecure context (HTTP). Access via HTTPS or localhost.')
+            : (window.I18n ? window.I18n.t('webcodecs_warning.reason_unsupported') : 'Video encoding disabled: WebCodecs (VideoEncoder) not supported by browser.');
           console.warn(`[App] Skipping standalone video "${item.name}": ${item.error}`);
           return;
         }
 
-        item.phase = 'Transcoding Video';
+        item.phaseCode = 'transcoding_video';
+        item.phase = window.I18n ? window.I18n.t('phases.transcoding_video') : 'Transcoding Video';
         updateRow(item);
 
         const videoOpts = { ...options.videoOptions, filename: item.name };
         const processor = window.MediaProcessor || window.VideoProcessor;
         const res = await processor.compressMedia(item.file, videoOpts, (prog) => {
           item.progress = prog.progress || 50;
-          item.phase = `${prog.phase || 'Encoding'} (${item.progress}%)`;
+          item.phaseCode = prog.phaseCode || 'transcoding_video';
+          item.phase = prog.phase || 'Encoding';
           updateRow(item);
         });
 
@@ -819,7 +850,8 @@
         item.compressedSize = res.buffer ? res.buffer.byteLength : res.blob.size;
         item.resultUrl = createManagedUrl(item.resultBlob);
       } else if (item.typeInfo.category === 'audio') {
-        item.phase = 'Compressing Audio';
+        item.phaseCode = 'compressing_audio';
+        item.phase = window.I18n ? window.I18n.t('phases.compressing_audio') : 'Compressing Audio';
         updateRow(item);
 
         const audioOpts = {
@@ -831,7 +863,8 @@
         const processor = window.MediaProcessor || window.AudioProcessor;
         const res = await processor.compressMedia(item.file, audioOpts, (prog) => {
           item.progress = prog.progress || 50;
-          item.phase = `${prog.phase || 'Encoding'} (${item.progress}%)`;
+          item.phaseCode = prog.phaseCode || 'compressing_audio';
+          item.phase = prog.phase || 'Encoding';
           updateRow(item);
         });
 
@@ -841,11 +874,13 @@
         item.compressedSize = res.buffer ? res.buffer.byteLength : res.blob.size;
         item.resultUrl = createManagedUrl(item.resultBlob);
       } else if (item.typeInfo.category === 'document') {
-        item.phase = 'Processing Document Media';
+        item.phaseCode = 'processing_doc';
+        item.phase = window.I18n ? window.I18n.t('phases.processing_doc') : 'Processing Document Media';
         updateRow(item);
 
         const res = await window.DocProcessor.processDocument(item.file, options, (prog) => {
           item.progress = prog.progress || 50;
+          item.phaseCode = prog.phaseCode || 'processing_doc';
           item.phase = prog.phase || 'Compressing';
           updateRow(item);
         });
@@ -857,20 +892,23 @@
         item.compressedSize = res.buffer ? res.buffer.byteLength : res.blob.size;
         item.resultUrl = createManagedUrl(res.blob);
         if (res.hasSkippedVideo) {
-          item.phase = 'Completed (Embedded video kept intact)';
+          item.phaseCode = 'doc_video_intact';
+          item.phase = window.I18n ? window.I18n.t('phases.doc_video_intact') : 'Completed (Embedded video kept intact)';
         }
       }
 
       if (item.status !== 'skipped') {
         item.status = 'completed';
         item.progress = 100;
-        item.phase = item.phase && item.phase.startsWith('Completed') ? item.phase : 'Completed';
+        item.phaseCode = item.phaseCode === 'doc_video_intact' ? 'doc_video_intact' : 'completed';
+        item.phase = window.I18n ? window.I18n.t(`phases.${item.phaseCode}`) : 'Completed';
       }
     } catch (err) {
       console.error(`[Queue] Failed processing item ${item.name}:`, err);
       item.status = 'error';
       item.error = err.message || String(err);
-      item.phase = 'Failed';
+      item.phaseCode = 'failed';
+      item.phase = window.I18n ? window.I18n.t('phases.failed') : 'Failed';
     } finally {
       updateRow(item);
       updateGlobalStats();
@@ -938,7 +976,7 @@
     const completedItems = state.queue.filter((i) => (i.status === 'completed' || i.status === 'skipped') && i.resultBlob);
     if (completedItems.length === 0) return;
 
-    DOM.btnDownloadAll.textContent = '⏳ Compressing ZIP...';
+    DOM.btnDownloadAll.textContent = window.I18n ? window.I18n.t('queue.btn_compressing_zip') : '⏳ Compressing ZIP...';
     DOM.btnDownloadAll.disabled = true;
 
     try {
@@ -967,7 +1005,7 @@
     } catch (e) {
       alert(`Failed to create ZIP: ${e.message}`);
     } finally {
-      DOM.btnDownloadAll.textContent = '📦 Download All (ZIP)';
+      DOM.btnDownloadAll.textContent = window.I18n ? window.I18n.t('queue.btn_download_zip') : '📦 Download All (ZIP)';
       DOM.btnDownloadAll.disabled = false;
     }
   }
@@ -999,9 +1037,11 @@
     const item = state.queue.find((i) => i.id === itemId);
     if (!item || !item.resultBlob) return;
 
-    DOM.modalTitle.textContent = `Comparison: ${item.name}`;
-    DOM.modalOriginalMeta.textContent = `Original: ${formatBytes(item.originalSize)}`;
-    DOM.modalCompressedMeta.textContent = `Compressed: ${formatBytes(item.compressedSize)} (-${Math.round(((item.originalSize - item.compressedSize)/item.originalSize)*100)}%)`;
+    DOM.modalTitle.textContent = window.I18n
+      ? window.I18n.t('modal.comparison_title', { name: item.name })
+      : `Comparison: ${item.name}`;
+    DOM.modalOriginalMeta.textContent = `${window.I18n ? window.I18n.t('modal.orig_file') : 'Original File'}: ${formatBytes(item.originalSize)}`;
+    DOM.modalCompressedMeta.textContent = `${window.I18n ? window.I18n.t('modal.comp_output') : 'Compressed Output'}: ${formatBytes(item.compressedSize)} (-${Math.round(((item.originalSize - item.compressedSize)/item.originalSize)*100)}%)`;
 
     DOM.modalOrigPreview.innerHTML = '';
     DOM.modalCompPreview.innerHTML = '';
@@ -1122,29 +1162,57 @@
       if (e.target === DOM.compareModal) closeCompareModal();
     });
 
-    // Resilient Dependency Loader status listener
-    if (window.DependencyLoader) {
-      window.DependencyLoader.ready().then((info) => {
-        const isAllLoaded = info.loaded === info.total;
-        const hasWebCodecs = isWebCodecsAvailable();
-        if (!hasWebCodecs) {
-          DOM.depStatusPill.className = 'dep-pill dep-warn';
-          DOM.depStatusPill.textContent = `${info.loaded}/${info.total} Ready • No Video Enc`;
-          DOM.depStatusPill.title = 'WebCodecs is unavailable (unsecure HTTP context or unsupported browser).\nVideo encoding disabled; documents, audio, and images will still compress.';
-        } else {
-          DOM.depStatusPill.className = `dep-pill ${isAllLoaded ? 'dep-ok' : 'dep-warn'}`;
-          DOM.depStatusPill.textContent = `${info.loaded}/${info.total} Libs Ready`;
-          DOM.depStatusPill.title = Object.entries(info.status)
-            .map(([k, v]) => `${k}: ${v.loaded ? v.source : 'failed'}`)
-            .join('\n');
-        }
+    // Language selector
+    if (DOM.langSelect) {
+      DOM.langSelect.addEventListener('change', (e) => {
+        if (window.I18n) window.I18n.setLanguage(e.target.value);
       });
     }
+
+    // Dynamic re-render on language change
+    window.addEventListener('languagechange', () => {
+      applyTheme(state.theme);
+      detectCodecs();
+      renderQueueTable();
+      updateGlobalStats();
+      updateDependencyPill();
+    });
+
+    // Resilient Dependency Loader status listener
+    updateDependencyPill();
+  }
+
+  // Update dependency status pill text and tooltip
+  function updateDependencyPill() {
+    if (!window.DependencyLoader || !DOM.depStatusPill) return;
+    window.DependencyLoader.ready().then((info) => {
+      const isAllLoaded = info.loaded === info.total;
+      const hasWebCodecs = isWebCodecsAvailable();
+      if (!hasWebCodecs) {
+        DOM.depStatusPill.className = 'dep-pill dep-warn';
+        DOM.depStatusPill.textContent = window.I18n
+          ? window.I18n.t('header.libs_ready_no_video', { loaded: info.loaded, total: info.total })
+          : `${info.loaded}/${info.total} Ready • No Video Enc`;
+        DOM.depStatusPill.title = 'WebCodecs is unavailable (unsecure HTTP context or unsupported browser).\nVideo encoding disabled; documents, audio, and images will still compress.';
+      } else {
+        DOM.depStatusPill.className = `dep-pill ${isAllLoaded ? 'dep-ok' : 'dep-warn'}`;
+        DOM.depStatusPill.textContent = window.I18n
+          ? window.I18n.t('header.libs_ready', { loaded: info.loaded, total: info.total })
+          : `${info.loaded}/${info.total} Libs Ready`;
+        DOM.depStatusPill.title = Object.entries(info.status)
+          .map(([k, v]) => `${k}: ${v.loaded ? v.source : 'failed'}`)
+          .join('\n');
+      }
+    });
   }
 
   // Application bootstrap
   async function init() {
     initDomReferences();
+    if (window.I18n) {
+      const activeLang = window.I18n.init();
+      if (DOM.langSelect) DOM.langSelect.value = activeLang;
+    }
     applyTheme(state.theme);
     setupEventListeners();
     await detectCodecs();
